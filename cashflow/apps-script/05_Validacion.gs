@@ -81,11 +81,40 @@ function validarVencimiento(etiqueta, periodicidad, valor) {
          'Se corta en 28 para que febrero no lo corra solo.'];
   }
   if (periodicidad === 'UNICA') {
-    return esFecha(valor)
+    // Una fecha todavía sin confirmar no es un error: es normal no saber
+    // cuándo vence algo. No frena la proyección, sale como aviso.
+    return (valor === '' || valor === null || valor === undefined || esFecha(valor))
       ? []
       : [etiqueta + ': con Periodicidad UNICA el Vencimiento tiene que ser una fecha.'];
   }
   return [];
+}
+
+/**
+ * Obligaciones activas cuya plata NO está en la proyección, y por qué.
+ *
+ * No bloquean, pero tampoco pueden desaparecer sin más: son montos reales que
+ * en algún momento hay que pagar. Se muestran todas las semanas en "Esta
+ * Semana" hasta que se les ponga fecha.
+ */
+function avisosDeObligaciones(filas) {
+  var avisos = [];
+
+  filas.forEach(function (f) {
+    if (String(f[COL_OBL.ACTIVO]).toUpperCase() !== 'SI') return;
+    if (f[COL_OBL.PERIODICIDAD] !== 'UNICA') return;
+    if (esFecha(f[COL_OBL.VENCIMIENTO])) return;
+
+    avisos.push({
+      id: f[COL_OBL.ID],
+      concepto: f[COL_OBL.CONCEPTO],
+      acreedor: f[COL_OBL.ACREEDOR],
+      monto: Number(f[COL_OBL.MONTO]) || 0,
+      motivo: 'sin fecha de vencimiento: no está en la proyección'
+    });
+  });
+
+  return avisos;
 }
 
 /** `instanceof Date` falla entre contextos; esto no. */

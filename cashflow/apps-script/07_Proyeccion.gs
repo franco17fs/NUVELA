@@ -50,6 +50,7 @@ function calcularTodo(ss) {
   resultado.cfg = cfg;
   resultado.brutoPorSemana = brutoPorSemana;
   resultado.deudas = filasDe(ss, ESQUEMA.DEUDAS);
+  resultado.avisos = avisosDeObligaciones(obligaciones);
   return resultado;
 }
 

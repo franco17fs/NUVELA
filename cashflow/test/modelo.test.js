@@ -79,14 +79,41 @@ test('la semilla de obligaciones respeta el esquema', () => {
   }
 });
 
-test('la semilla de obligaciones pasa la validación', () => {
-  // La fecha de OBL-011 se confirma con Mercado Pago; para validar se completa.
+test('la semilla de obligaciones pasa la validación tal como se entrega', () => {
+  // Sale de fábrica con OBL-011 sin fecha (hay que confirmarla con Mercado Pago)
+  // y aun así tiene que poder proyectar: si no, el sistema no arranca nunca.
+  const problemas = G.validarObligaciones(G.OBLIGACIONES_SEMILLA);
+  assert.deepStrictEqual([...problemas], [], problemas.join('\n'));
+});
+
+test('una fecha única sin confirmar avisa, pero no bloquea', () => {
   const filas = G.OBLIGACIONES_SEMILLA.map((f) => f.slice());
   const unica = filas.find((f) => f[G.COL_OBL.PERIODICIDAD] === 'UNICA');
-  unica[G.COL_OBL.VENCIMIENTO] = new Date(2026, 8, 30);
 
-  const problemas = G.validarObligaciones(filas);
-  assert.deepStrictEqual([...problemas], [], problemas.join('\n'));
+  unica[G.COL_OBL.VENCIMIENTO] = '';
+  assert.deepStrictEqual([...G.validarObligaciones(filas)], [], 'sin fecha no puede ser un error');
+
+  const avisos = G.avisosDeObligaciones(filas);
+  assert.strictEqual(avisos.length, 1);
+  assert.strictEqual(avisos[0].id, 'OBL-011');
+  assert.strictEqual(avisos[0].monto, 900_000, 'la plata tiene que seguir a la vista');
+
+  // Una fecha basura sí es un error: se escribió algo y está mal.
+  unica[G.COL_OBL.VENCIMIENTO] = 'el mes que viene';
+  assert.match(G.validarObligaciones(filas).join(' '), /tiene que ser una fecha/);
+});
+
+test('con la fecha puesta deja de avisar', () => {
+  const filas = G.OBLIGACIONES_SEMILLA.map((f) => f.slice());
+  filas.find((f) => f[G.COL_OBL.PERIODICIDAD] === 'UNICA')[G.COL_OBL.VENCIMIENTO] = new Date(2026, 8, 30);
+  assert.strictEqual(G.avisosDeObligaciones(filas).length, 0);
+});
+
+test('una obligación desactivada sin fecha no avisa: ya se sabe que no cuenta', () => {
+  const filas = G.OBLIGACIONES_SEMILLA.map((f) => f.slice());
+  const unica = filas.find((f) => f[G.COL_OBL.PERIODICIDAD] === 'UNICA');
+  unica[G.COL_OBL.ACTIVO] = 'NO';
+  assert.strictEqual(G.avisosDeObligaciones(filas).length, 0);
 });
 
 test('la validación agarra los errores que rompen la proyección', () => {

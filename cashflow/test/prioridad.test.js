@@ -261,6 +261,22 @@ test('el déficit siempre es comprometido menos disponible, nunca negativo', () 
   }
 });
 
+test('el aviso muestra la plata que quedó fuera de la proyección por falta de fecha', () => {
+  const r = conSemilla();
+  const avisos = G.avisosDeObligaciones(G.OBLIGACIONES_SEMILLA);
+  assert.ok(avisos.length, 'la semilla trae OBL-011 sin fecha confirmada');
+
+  const texto = G.textoDelAviso(G.resumenSemanal(r.filas[0], r.plan), r.plan, r.quiebre, avisos);
+  assert.match(texto, /Fuera de la proyección/);
+  assert.ok(texto.includes(G.pesos(900_000)), 'los $900.000 del crédito tienen que aparecer');
+});
+
+test('sin avisos, el aviso no menciona nada fuera de la proyección', () => {
+  const r = conSemilla();
+  const texto = G.textoDelAviso(G.resumenSemanal(r.filas[0], r.plan), r.plan, r.quiebre, []);
+  assert.ok(!texto.includes('Fuera de la proyección'));
+});
+
 test('el aviso avisa del quiebre aunque esta semana alcance', () => {
   const r = conSemilla({}, 500_000);
   const texto = G.textoDelAviso(G.resumenSemanal(r.filas[0], r.plan), r.plan, r.quiebre);

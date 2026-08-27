@@ -22,9 +22,13 @@ function onOpen() {
  */
 function revisarCarga() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var problemas = validarObligaciones(
-    ss.getSheetByName(ESQUEMA.OBLIGACIONES.nombre).getDataRange().getValues().slice(1)
-  );
+  var obligaciones = ss.getSheetByName(ESQUEMA.OBLIGACIONES.nombre).getDataRange().getValues().slice(1);
+  var problemas = validarObligaciones(obligaciones);
+
+  avisosDeObligaciones(obligaciones).forEach(function (a) {
+    problemas.push(a.id + ' (' + a.concepto + '): ' + pesos(a.monto) + ' ' + a.motivo +
+                   '. No frena nada, pero poné la fecha cuando la confirmes.');
+  });
 
   var cfg = leerConfig(ss);
   if (!Number(cfg.SALDO_MERCADO_PAGO) && !Number(cfg.SALDO_EFECTIVO)) {

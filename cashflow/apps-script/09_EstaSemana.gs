@@ -97,10 +97,34 @@ function escribirEstaSemana(ss, resultado, plan, deudas) {
   }
 
   f += 2;
+  f = escribirSinFecha(hoja, f, resultado.avisos);
   escribirDeudas(hoja, f, deudas);
 
   def.columnas.forEach(function (c, i) { hoja.setColumnWidth(i + 1, c.ancho); });
   hoja.setFrozenRows(filaCabecera);
+}
+
+/**
+ * Plata real que todavía no entró en ninguna semana porque le falta la fecha.
+ * Queda a la vista todas las semanas: es la forma de que no se pierda.
+ */
+function escribirSinFecha(hoja, f, avisos) {
+  if (!avisos || !avisos.length) return f;
+
+  var total = avisos.reduce(function (a, x) { return a + x.monto; }, 0);
+  hoja.getRange(f, 1, 1, 5).merge()
+      .setValue('FUERA DE LA PROYECCIÓN: ' + pesos(total) + ' sin fecha de vencimiento')
+      .setFontWeight('bold').setBackground('#FFF6E0').setFontColor('#8A6100');
+  f++;
+
+  avisos.forEach(function (a) {
+    hoja.getRange(f, 1, 1, 5).merge()
+        .setValue('· ' + a.concepto + ' ' + pesos(a.monto) + ' (' + a.acreedor + ') — ' + a.motivo)
+        .setFontColor('#8A6100');
+    f++;
+  });
+
+  return f + 1;
 }
 
 /** Saldo vivo y cuánto flujo mensual libera cada deuda al terminar. */
@@ -127,7 +151,7 @@ function escribirDeudas(hoja, f, deudas) {
 // --- Avisos -----------------------------------------------------------------
 
 /** Texto del aviso. Puro: se testea sin mandar nada. */
-function textoDelAviso(resumen, plan, quiebre) {
+function textoDelAviso(resumen, plan, quiebre, avisos) {
   var l = ['NUVELA · Semana del ' + formatearFecha(resumen.desde) + ' al ' + formatearFecha(resumen.hasta), ''];
 
   l.push('Tenés hoy: ' + pesos(resumen.tenesHoy));
@@ -151,6 +175,15 @@ function textoDelAviso(resumen, plan, quiebre) {
     l.push('');
     l.push('Primer quiebre: semana ' + quiebre.semana + ' (' + formatearFecha(quiebre.desde) +
            '), faltan ' + pesos(quiebre.faltan) + '. Tenés ' + quiebre.dias + ' días.');
+  }
+
+  if (avisos && avisos.length) {
+    var total = avisos.reduce(function (a, x) { return a + x.monto; }, 0);
+    l.push('');
+    l.push('Fuera de la proyección: ' + pesos(total) + ' sin fecha.');
+    avisos.forEach(function (a) {
+      l.push('· ' + a.concepto + ' ' + pesos(a.monto) + ' — ' + a.motivo);
+    });
   }
 
   return l.join('\n');
@@ -196,7 +229,7 @@ function avisoSemanal() {
   escribirCashflow(ss, resultado, new Date());
   escribirEstaSemana(ss, resultado, resultado.plan, resultado.deudas);
   enviarAviso(textoDelAviso(resumenSemanal(resultado.filas[0], resultado.plan),
-                            resultado.plan, resultado.quiebre), resultado.cfg);
+                            resultado.plan, resultado.quiebre, resultado.avisos), resultado.cfg);
 }
 
 /** Programa el aviso para todos los domingos a la noche. */
