@@ -102,6 +102,37 @@ var ESQUEMA = {
     ]
   },
 
+  DIA: {
+    nombre: 'Dia',
+    generada: false,
+    descripcion: 'Una fila por día. Es la carga diaria: dos números y listo.',
+    columnas: [
+      { titulo: 'Fecha', ancho: 110, formato: FECHA },
+      { titulo: 'Bruto_Del_Dia', ancho: 150, formato: MONEDA,
+        nota: 'Lo que pagaron los compradores ese día, precio completo. Es el número que da ML en el panel de ventas.' },
+      { titulo: 'Compras_Mercaderia', ancho: 170, formato: MONEDA,
+        nota: 'Lo que se pagó a proveedores ese día. Sale del fondo de mercadería; si queda en cero, el fondo acumula.' },
+      { titulo: 'Notas', ancho: 400 }
+    ]
+  },
+
+  HOY: {
+    nombre: 'Hoy',
+    generada: true,
+    libre: true,
+    descripcion: 'La distribución del día. La escribe el sistema — no editar.',
+    columnas: [
+      { titulo: 'Obligación', ancho: 240 },
+      { titulo: 'Vence', ancho: 100, formato: FECHA },
+      { titulo: 'Total', ancho: 130, formato: MONEDA },
+      { titulo: 'Reservado', ancho: 130, formato: MONEDA },
+      { titulo: 'Falta', ancho: 130, formato: MONEDA },
+      { titulo: 'Separado hoy', ancho: 130, formato: MONEDA },
+      { titulo: 'Días', ancho: 70 },
+      { titulo: 'Por día desde mañana', ancho: 160, formato: MONEDA }
+    ]
+  },
+
   MOVIMIENTOS: {
     nombre: 'Movimientos',
     generada: false,
@@ -173,7 +204,7 @@ var ESQUEMA = {
 };
 
 /** Orden en que se crean las pestañas. */
-var ORDEN_HOJAS = ['ESTA_SEMANA', 'CASHFLOW', 'SIMULADOR', 'VENTAS',
+var ORDEN_HOJAS = ['HOY', 'ESTA_SEMANA', 'CASHFLOW', 'SIMULADOR', 'DIA', 'VENTAS',
                    'OBLIGACIONES', 'DEUDAS', 'MOVIMIENTOS', 'CONFIG'];
 
 // --- Utilidades de fecha (puras: se testean en Node) ------------------------

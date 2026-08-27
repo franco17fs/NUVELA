@@ -12,7 +12,8 @@ y **si no alcanza, qué se paga primero y qué queda afuera**.
 | 2 | Proyección de 13 semanas | ✅ listo |
 | 3 | Priorización y alertas | ✅ listo |
 | 4 | Simulador de escenarios | ✅ listo |
-| 5 | Conector de la API de Mercado Libre | pendiente |
+| 5 | Distribución diaria en fondos | ✅ listo |
+| 6 | Conector de la API de Mercado Libre | pendiente |
 
 ## Instalación (una sola vez, ~3 minutos)
 
@@ -127,6 +128,57 @@ y la palanca daría siempre peor de lo que es.
 últimas semanas más allá del horizonte de 13 semanas. Esa plata no se pierde — entra
 después. El cierre queda peor de lo que realmente es, así que para decidir hay que mirar
 el quiebre y las primeras semanas.
+
+## Distribución diaria en fondos
+
+`Cerrar el día` reparte lo que generaron las ventas del día para que ningún peso quede
+sin destino. El orden **es** la regla de seguridad:
+
+1. **Mercadería** — el costo de reponer lo vendido. No es ganancia y sale primero, así
+   separar para una obligación nunca puede dejar al negocio sin con qué comprar.
+2. **Obligaciones** — lo que hay que separar hoy para llegar a cada vencimiento:
+   `pendiente ÷ días restantes`, recalculado todos los días.
+3. **Colchón** — hasta el objetivo de seguridad.
+4. **Adelantos** — en días buenos, se adelantan reservas futuras.
+5. **Libre** — lo único que se puede retirar.
+
+### El ciclo de un fondo
+
+Cada vencimiento junta plata día a día y **se vacía al vencer**: la reserva se usa para
+pagarlo. Si no alcanzó, el faltante sale de libre, después del colchón y recién al final
+de mercadería — y eso pone el semáforo en rojo, que es exactamente lo que hay que ver.
+
+Un fondo que se llena y no se vacía no es un fondo: acumula para siempre y hace que
+nunca haya plata libre.
+
+### Orden cuando compiten por la plata
+
+Vencimiento más cercano → criticidad → la más descubierta. Un día flojo separa menos y
+el promedio necesario de los días siguientes sube solo, sin que haya que tocar nada.
+
+### Recalcular no acumula
+
+El estado se reconstruye reproduciendo todos los días desde el principio. Correr
+`Cerrar el día` dos veces no duplica nada, y el orden en que se cargan los días no
+cambia el resultado.
+
+### El colchón
+
+`Sugerir colchón` lo calcula como `DIAS_COLCHON` días de operación completa: reposición
+de mercadería, motomensajería y el prorrateo diario de los vencimientos del mes.
+Contesta "si dejo de vender, ¿cuántos días aguanto sin romper nada?".
+
+### Semáforo
+
+- **ROJO** — el fondo de mercadería en negativo, una obligación vencida sin cubrir, o
+  un vencimiento al que no se llega al ritmo actual.
+- **AMARILLO** — se llega, pero las obligaciones se comen más del 80% del margen diario,
+  o el colchón está corto.
+- **VERDE** — mercadería, obligaciones y colchón cubiertos.
+
+Cada estado dice por qué, y cada alerta viene con propuestas concretas ordenadas de menor
+a mayor daño: usar el fondo libre, separar más por día, postergar compras, y último de
+todo tocar el colchón.
 
 ## Avisos
 

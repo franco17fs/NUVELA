@@ -6,9 +6,12 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
+    .addItem('Cerrar el día', 'actualizarHoy')
+    .addSeparator()
     .addItem('Actualizar proyección', 'actualizarProyeccion')
     .addItem('Simular escenario', 'simular')
     .addSeparator()
+    .addItem('Sugerir colchón', 'sugerirColchon')
     .addItem('Activar aviso de los domingos', 'activarAvisoDominical')
     .addItem('Mandarme el aviso ahora', 'avisoSemanal')
     .addSeparator()

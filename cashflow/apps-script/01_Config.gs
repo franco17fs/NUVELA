@@ -17,7 +17,7 @@
  * que ya existe. Comparar esta versión contra la de la hoja es lo que hace que
  * el desfasaje se avise en vez de pasar desapercibido.
  */
-var MODELO_VERSION = 4;
+var MODELO_VERSION = 5;
 
 var CONFIG_SEMILLA = [
   ['MODELO_VERSION', MODELO_VERSION, 'versión',
@@ -27,8 +27,20 @@ var CONFIG_SEMILLA = [
   // --- Saldos de arranque -------------------------------------------------
   ['SALDO_MERCADO_PAGO', 0, '$', 'Plata disponible hoy en Mercado Pago.', 'DECLARADO'],
   ['SALDO_EFECTIVO', 0, '$', 'Efectivo en el depósito.', 'DECLARADO'],
-  ['COLCHON_MINIMO', 500000, '$',
-   'Piso de caja. La proyección avisa cuando la semana cae por debajo, sin esperar a que dé negativo. Equivale a dos semanas de moto.',
+  ['COLCHON_MINIMO', 1370000, '$',
+   'Piso de caja y objetivo del fondo colchón. Calculado como DIAS_COLCHON días de operación completa: reponer mercadería, pagar la moto y el prorrateo diario de los vencimientos del mes. Correr "Sugerir colchón" en el menú lo recalcula con los números de hoy.',
+   'ESTIMADO'],
+  ['DIAS_COLCHON', 5, 'días',
+   'Cuántos días de operación tiene que cubrir el colchón. Es la respuesta a "si dejo de vender, ¿cuántos días aguanto sin romper nada?".',
+   'ESTIMADO'],
+  ['FONDO_MERCADERIA_INICIAL', 0, '$',
+   'Plata que ya estaba apartada para comprar mercadería cuando arrancó el registro diario. Si se arranca de cero, queda en cero.',
+   'DECLARADO'],
+  ['PCT_BUFFER_MERCADERIA', 0, '%',
+   'Extra sobre el costo de reposición, para crecer en stock en vez de solo reponer. En 0 se repone exactamente lo que se vendió.',
+   'ESTIMADO'],
+  ['HORIZONTE_FONDOS_DIAS', 60, 'días',
+   'Hasta qué vencimientos se empieza a juntar plata. Más largo separa antes y deja menos libre; más corto libera plata pero llega más justo.',
    'ESTIMADO'],
 
   // --- Cómo entra la plata de Mercado Libre -------------------------------

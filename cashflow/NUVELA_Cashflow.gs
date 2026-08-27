@@ -4,7 +4,7 @@
  * GENERADO: no editar acá. La fuente son los archivos de cashflow/apps-script/.
  * Para regenerarlo:  node cashflow/build/bundle.js
  *
- * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs, 08_Prioridad.gs, 09_EstaSemana.gs, 10_Simulador.gs
+ * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs, 08_Prioridad.gs, 09_EstaSemana.gs, 10_Simulador.gs, 11_Fondos.gs, 12_Hoy.gs
  *
  * Instalación:
  *   1. En la planilla: Extensiones -> Apps Script
@@ -25,9 +25,12 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
+    .addItem('Cerrar el día', 'actualizarHoy')
+    .addSeparator()
     .addItem('Actualizar proyección', 'actualizarProyeccion')
     .addItem('Simular escenario', 'simular')
     .addSeparator()
+    .addItem('Sugerir colchón', 'sugerirColchon')
     .addItem('Activar aviso de los domingos', 'activarAvisoDominical')
     .addItem('Mandarme el aviso ahora', 'avisoSemanal')
     .addSeparator()
@@ -93,7 +96,7 @@ function revisarCarga() {
  * que ya existe. Comparar esta versión contra la de la hoja es lo que hace que
  * el desfasaje se avise en vez de pasar desapercibido.
  */
-var MODELO_VERSION = 4;
+var MODELO_VERSION = 5;
 
 var CONFIG_SEMILLA = [
   ['MODELO_VERSION', MODELO_VERSION, 'versión',
@@ -103,8 +106,20 @@ var CONFIG_SEMILLA = [
   // --- Saldos de arranque -------------------------------------------------
   ['SALDO_MERCADO_PAGO', 0, '$', 'Plata disponible hoy en Mercado Pago.', 'DECLARADO'],
   ['SALDO_EFECTIVO', 0, '$', 'Efectivo en el depósito.', 'DECLARADO'],
-  ['COLCHON_MINIMO', 500000, '$',
-   'Piso de caja. La proyección avisa cuando la semana cae por debajo, sin esperar a que dé negativo. Equivale a dos semanas de moto.',
+  ['COLCHON_MINIMO', 1370000, '$',
+   'Piso de caja y objetivo del fondo colchón. Calculado como DIAS_COLCHON días de operación completa: reponer mercadería, pagar la moto y el prorrateo diario de los vencimientos del mes. Correr "Sugerir colchón" en el menú lo recalcula con los números de hoy.',
+   'ESTIMADO'],
+  ['DIAS_COLCHON', 5, 'días',
+   'Cuántos días de operación tiene que cubrir el colchón. Es la respuesta a "si dejo de vender, ¿cuántos días aguanto sin romper nada?".',
+   'ESTIMADO'],
+  ['FONDO_MERCADERIA_INICIAL', 0, '$',
+   'Plata que ya estaba apartada para comprar mercadería cuando arrancó el registro diario. Si se arranca de cero, queda en cero.',
+   'DECLARADO'],
+  ['PCT_BUFFER_MERCADERIA', 0, '%',
+   'Extra sobre el costo de reposición, para crecer en stock en vez de solo reponer. En 0 se repone exactamente lo que se vendió.',
+   'ESTIMADO'],
+  ['HORIZONTE_FONDOS_DIAS', 60, 'días',
+   'Hasta qué vencimientos se empieza a juntar plata. Más largo separa antes y deja menos libre; más corto libera plata pero llega más justo.',
    'ESTIMADO'],
 
   // --- Cómo entra la plata de Mercado Libre -------------------------------
@@ -289,6 +304,37 @@ var ESQUEMA = {
     ]
   },
 
+  DIA: {
+    nombre: 'Dia',
+    generada: false,
+    descripcion: 'Una fila por día. Es la carga diaria: dos números y listo.',
+    columnas: [
+      { titulo: 'Fecha', ancho: 110, formato: FECHA },
+      { titulo: 'Bruto_Del_Dia', ancho: 150, formato: MONEDA,
+        nota: 'Lo que pagaron los compradores ese día, precio completo. Es el número que da ML en el panel de ventas.' },
+      { titulo: 'Compras_Mercaderia', ancho: 170, formato: MONEDA,
+        nota: 'Lo que se pagó a proveedores ese día. Sale del fondo de mercadería; si queda en cero, el fondo acumula.' },
+      { titulo: 'Notas', ancho: 400 }
+    ]
+  },
+
+  HOY: {
+    nombre: 'Hoy',
+    generada: true,
+    libre: true,
+    descripcion: 'La distribución del día. La escribe el sistema — no editar.',
+    columnas: [
+      { titulo: 'Obligación', ancho: 240 },
+      { titulo: 'Vence', ancho: 100, formato: FECHA },
+      { titulo: 'Total', ancho: 130, formato: MONEDA },
+      { titulo: 'Reservado', ancho: 130, formato: MONEDA },
+      { titulo: 'Falta', ancho: 130, formato: MONEDA },
+      { titulo: 'Separado hoy', ancho: 130, formato: MONEDA },
+      { titulo: 'Días', ancho: 70 },
+      { titulo: 'Por día desde mañana', ancho: 160, formato: MONEDA }
+    ]
+  },
+
   MOVIMIENTOS: {
     nombre: 'Movimientos',
     generada: false,
@@ -360,7 +406,7 @@ var ESQUEMA = {
 };
 
 /** Orden en que se crean las pestañas. */
-var ORDEN_HOJAS = ['ESTA_SEMANA', 'CASHFLOW', 'SIMULADOR', 'VENTAS',
+var ORDEN_HOJAS = ['HOY', 'ESTA_SEMANA', 'CASHFLOW', 'SIMULADOR', 'DIA', 'VENTAS',
                    'OBLIGACIONES', 'DEUDAS', 'MOVIMIENTOS', 'CONFIG'];
 
 // --- Utilidades de fecha (puras: se testean en Node) ------------------------
@@ -2062,4 +2108,727 @@ function resumenDeSimulacion(c) {
 
   if (c.nota) { l.push(''); l.push(c.nota); }
   return l.join('\n');
+}
+
+// ========================================================================
+// 11_Fondos.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Distribución diaria en fondos.
+ *
+ * La idea: ningún peso entra sin destino. Cada día la plata que generan las
+ * ventas se reparte en este orden, y lo que sobra recién ahí es libre.
+ *
+ *   1. MERCADERÍA   — el costo de reponer lo que se vendió. No es ganancia.
+ *   2. OBLIGACIONES — lo que hay que separar hoy para llegar a cada vencimiento.
+ *   3. COLCHÓN      — hasta el objetivo de seguridad.
+ *   4. ADELANTOS    — en días buenos, se adelantan reservas futuras.
+ *   5. LIBRE        — lo único que es realmente disponible.
+ *
+ * El orden importa y es la Regla 1: separar para una obligación nunca puede
+ * dejar al negocio sin plata para comprar mercadería, porque la mercadería se
+ * descuenta primero.
+ *
+ * Todo es función pura sobre el registro de días: el estado se recalcula
+ * reproduciendo la historia, nunca se acumula a mano. Así correr el cálculo
+ * dos veces el mismo día no duplica nada.
+ */
+
+var COL_DIA = { FECHA: 0, BRUTO: 1, COMPRAS: 2, NOTAS: 3 };
+
+var SEMAFORO = { VERDE: 'VERDE', AMARILLO: 'AMARILLO', ROJO: 'ROJO' };
+
+// --- Colchón ----------------------------------------------------------------
+
+/**
+ * Cuánto debería ser el colchón, en función de lo que mueve el negocio.
+ *
+ * Se calcula como N días de operación completa: reponer mercadería, pagar la
+ * moto y el prorrateo diario de todo lo que vence en el mes. Es lo que hace
+ * falta para aguantar N días sin vender nada y no romper nada.
+ */
+function colchonSugerido(cfg, obligacionesDiarias) {
+  var brutoDiario = (Number(cfg.VENTA_BRUTA_SEMANAL_BASE) || 0) / 7;
+  var mercaderia = brutoDiario * (Number(cfg.PCT_COSTO_MERCADERIA) || 0) / 100;
+  var moto = brutoDiario * (Number(cfg.PCT_MOTOMENSAJERIA) || 0) / 100;
+  var dias = Number(cfg.DIAS_COLCHON) || 5;
+
+  return Math.round((mercaderia + moto + (obligacionesDiarias || 0)) * dias);
+}
+
+/** Prorrateo diario de las obligaciones que no dependen de las ventas. */
+function obligacionesPorDia(objetivos, desde, hasta) {
+  var dias = Math.max(1, Math.round((hasta - desde) / MS_DIA));
+  var total = objetivos.reduce(function (a, o) { return a + o.monto; }, 0);
+  return total / dias;
+}
+
+// --- Objetivos de financiamiento --------------------------------------------
+
+/**
+ * Cada vencimiento concreto que hay que ir juntando, dentro del horizonte.
+ *
+ * La mercadería queda afuera a propósito: no se junta para comprarla, se
+ * descuenta de cada venta. Meterla acá la contaría dos veces.
+ */
+function objetivosDeFinanciamiento(obligaciones, desde, hasta, cfg, brutoDiario) {
+  var semanas = generarSemanas(desde, Math.ceil((hasta - desde) / MS_DIA / 7) + 1);
+  var brutos = semanas.map(function () { return brutoDiario * 7; });
+
+  return expandirObligaciones(obligaciones, semanas, brutos, cfg, desde)
+    .filter(function (v) {
+      // `generarSemanas` arranca el lunes de `desde`, así que puede traer
+      // vencimientos anteriores al primer día registrado. Esos ya se pagaron
+      // antes de que existiera este sistema y no hay que juntar plata para ellos.
+      return v.categoria !== 'MERCADERIA' && v.fecha >= desde && v.fecha <= hasta && v.monto > 0;
+    })
+    .map(function (v) {
+      return { id: v.id + '@' + formatearFecha(v.fecha), obligacionId: v.id, concepto: v.concepto,
+               acreedor: v.acreedor, fecha: v.fecha, monto: v.monto,
+               criticidad: v.criticidad, consecuencia: v.consecuencia };
+    });
+}
+
+/** Días que faltan para el vencimiento. Nunca menos de 1: hoy también cuenta. */
+function diasHasta(fecha, hoy) {
+  return Math.max(1, Math.ceil((fecha - hoy) / MS_DIA));
+}
+
+/**
+ * Orden de atención cuando la plata no alcanza para todos (Regla 2):
+ * vencimiento más cercano, después criticidad, después el más descubierto.
+ */
+function ordenarObjetivos(objetivos, reservas, hoy) {
+  return objetivos.slice().sort(function (a, b) {
+    var da = diasHasta(a.fecha, hoy), db = diasHasta(b.fecha, hoy);
+    if (da !== db) return da - db;
+    if (b.criticidad !== a.criticidad) return b.criticidad - a.criticidad;
+    var pa = 1 - (reservas[a.id] || 0) / a.monto;
+    var pb = 1 - (reservas[b.id] || 0) / b.monto;
+    return pb - pa;
+  });
+}
+
+// --- Un día -----------------------------------------------------------------
+
+/**
+ * Reparte la plata de un día. No modifica el estado que recibe: devuelve el
+ * detalle de la distribución y el estado nuevo.
+ */
+function distribuirDia(dia, estado, objetivos, cfg) {
+  var bruto = Number(dia.bruto) || 0;
+  var compras = Number(dia.compras) || 0;
+
+  var neto = bruto * (Number(cfg.PCT_NETO_SOBRE_BRUTO) || 0) / 100;
+  var reposicion = bruto * (Number(cfg.PCT_COSTO_MERCADERIA) || 0) / 100
+                        * (1 + (Number(cfg.PCT_BUFFER_MERCADERIA) || 0) / 100);
+  var margen = neto - reposicion;
+
+  var reservas = {};
+  for (var k in estado.reservas) reservas[k] = estado.reservas[k];
+  var pagados = {};
+  for (var p in estado.pagados) pagados[p] = estado.pagados[p];
+
+  var fondoColchon = estado.fondoColchon;
+  var fondoLibre = estado.fondoLibre;
+  var fondoMercaderia = estado.fondoMercaderia;
+
+  // 0. Liquidar lo que ya venció. La reserva existe para gastarse: si no se
+  // vacía cuando llega el vencimiento, el fondo crece para siempre y no queda
+  // nunca plata libre. Lo que faltó se saca del fondo menos doloroso primero.
+  var liquidados = [];
+  objetivos.forEach(function (o) {
+    if (pagados[o.id] || o.fecha >= dia.fecha) return;
+
+    var reservado = Math.min(reservas[o.id] || 0, o.monto);
+    var faltante = o.monto - reservado;
+    var origen = { reserva: reservado, libre: 0, colchon: 0, mercaderia: 0 };
+
+    var deLibre = Math.min(faltante, fondoLibre);
+    fondoLibre -= deLibre; origen.libre = deLibre; faltante -= deLibre;
+
+    var deColchon = Math.min(faltante, fondoColchon);
+    fondoColchon -= deColchon; origen.colchon = deColchon; faltante -= deColchon;
+
+    if (faltante > 0) { fondoMercaderia -= faltante; origen.mercaderia = faltante; }
+
+    reservas[o.id] = 0;
+    pagados[o.id] = true;
+    liquidados.push({ concepto: o.concepto, fecha: o.fecha, monto: o.monto,
+                      origen: origen, saleDeMercaderia: origen.mercaderia });
+  });
+
+  // 1. Mercadería: entra la reposición, sale lo que se compró de verdad.
+  fondoMercaderia += reposicion - compras;
+
+  // 2 y 4. Obligaciones. Primero lo necesario de cada una, después adelantos.
+  var disponible = Math.max(0, margen);
+  var vigentes = objetivos.filter(function (o) { return !pagados[o.id]; });
+  var orden = ordenarObjetivos(vigentes, reservas, dia.fecha);
+  var asignado = {};
+
+  orden.forEach(function (o) {
+    var pendiente = Math.max(0, o.monto - (reservas[o.id] || 0));
+    if (pendiente <= 0 || disponible <= 0) return;
+    var necesario = Math.min(pendiente, pendiente / diasHasta(o.fecha, dia.fecha));
+    var monto = Math.min(necesario, disponible);
+    reservas[o.id] = (reservas[o.id] || 0) + monto;
+    asignado[o.id] = monto;
+    disponible -= monto;
+  });
+
+  // 3. Colchón, antes de adelantar nada y antes de liberar plata.
+  var objetivoColchon = Number(cfg.COLCHON_MINIMO) || 0;
+  var aColchon = Math.min(Math.max(0, objetivoColchon - fondoColchon), disponible);
+  disponible -= aColchon;
+
+  // 4. Día bueno: se adelantan reservas para descomprimir los días que vienen.
+  var adelantado = 0;
+  if (disponible > 0) {
+    orden.forEach(function (o) {
+      var pendiente = Math.max(0, o.monto - (reservas[o.id] || 0));
+      if (pendiente <= 0 || disponible <= 0) return;
+      var monto = Math.min(pendiente, disponible);
+      reservas[o.id] = (reservas[o.id] || 0) + monto;
+      asignado[o.id] = (asignado[o.id] || 0) + monto;
+      adelantado += monto;
+      disponible -= monto;
+    });
+  }
+
+  var aObligaciones = orden.reduce(function (a, o) { return a + (asignado[o.id] || 0); }, 0);
+
+  return {
+    fecha: dia.fecha,
+    bruto: Math.round(bruto),
+    neto: Math.round(neto),
+    costoMercaderia: Math.round(reposicion),
+    margen: Math.round(margen),
+    compras: Math.round(compras),
+    aMercaderia: Math.round(reposicion),
+    aObligaciones: Math.round(aObligaciones),
+    adelantado: Math.round(adelantado),
+    aColchon: Math.round(aColchon),
+    libre: Math.round(Math.max(0, disponible)),
+    asignado: asignado,
+    liquidados: liquidados,
+    estado: {
+      fondoMercaderia: fondoMercaderia,
+      fondoColchon: fondoColchon + aColchon,
+      fondoLibre: fondoLibre + Math.max(0, disponible),
+      reservas: reservas,
+      pagados: pagados
+    }
+  };
+}
+
+// --- La historia completa ---------------------------------------------------
+
+/**
+ * Reproduce todos los días en orden y devuelve el estado final más el detalle
+ * de cada día. Recalcular desde cero es lo que hace que el sistema sea
+ * idempotente: no hay saldos escritos a mano que se puedan desincronizar.
+ */
+function reproducirDias(dias, objetivos, cfg, pagados) {
+  var estado = { fondoMercaderia: Number(cfg.FONDO_MERCADERIA_INICIAL) || 0,
+                 fondoColchon: 0, fondoLibre: 0, reservas: {}, pagados: pagados || {} };
+  var detalle = [];
+
+  dias.slice().sort(function (a, b) { return a.fecha - b.fecha; }).forEach(function (d) {
+    var r = distribuirDia(d, estado, objetivos, cfg);
+    estado = r.estado;
+    detalle.push(r);
+  });
+
+  return { estado: estado, dias: detalle };
+}
+
+// --- Estado de cada fondo ---------------------------------------------------
+
+/** Objetivos todavía vigentes: lo ya liquidado sale del cuadro. */
+function objetivosVigentes(objetivos, estado) {
+  return objetivos.filter(function (o) { return !estado.pagados[o.id]; });
+}
+
+function estadoDeObjetivos(objetivos, estado, hoy) {
+  return ordenarObjetivos(objetivosVigentes(objetivos, estado), estado.reservas, hoy).map(function (o) {
+    var reservado = Math.round(estado.reservas[o.id] || 0);
+    var pendiente = Math.max(0, o.monto - reservado);
+    var dias = diasHasta(o.fecha, hoy);
+    return {
+      id: o.id, concepto: o.concepto, acreedor: o.acreedor, fecha: o.fecha,
+      total: o.monto, reservado: reservado, pendiente: pendiente,
+      cubierto: o.monto > 0 ? reservado / o.monto : 1,
+      dias: dias,
+      porDia: Math.round(pendiente / dias),
+      criticidad: o.criticidad, consecuencia: o.consecuencia,
+      vencido: o.fecha < hoy && pendiente > 0
+    };
+  });
+}
+
+/** Plata en caja partida en cuatro: nunca todo junto. */
+function reparto(estado, objetivos) {
+  var enObligaciones = objetivosVigentes(objetivos, estado).reduce(function (a, o) {
+    return a + Math.min(estado.reservas[o.id] || 0, o.monto);
+  }, 0);
+
+  return {
+    mercaderia: Math.round(estado.fondoMercaderia),
+    obligaciones: Math.round(enObligaciones),
+    colchon: Math.round(estado.fondoColchon),
+    libre: Math.round(estado.fondoLibre),
+    total: Math.round(estado.fondoMercaderia + enObligaciones + estado.fondoColchon + estado.fondoLibre)
+  };
+}
+
+// --- Riesgo -----------------------------------------------------------------
+
+/** Margen promedio por día de los últimos días con ventas. */
+function margenDiarioPromedio(dias, cuantos) {
+  var ultimos = dias.slice(-(cuantos || 14)).filter(function (d) { return d.bruto > 0; });
+  if (!ultimos.length) return 0;
+  return ultimos.reduce(function (a, d) { return a + d.margen; }, 0) / ultimos.length;
+}
+
+/**
+ * Obligaciones que no se llegan a cubrir al ritmo actual (Regla 5).
+ *
+ * Cada una se mide contra lo que queda de margen después de las que vencen
+ * antes: la que vence primero se come el margen primero.
+ */
+function riesgos(objetivos, estado, hoy, margenDiario) {
+  var lista = estadoDeObjetivos(objetivos, estado, hoy);
+  var comprometido = 0;
+  var out = [];
+
+  lista.forEach(function (o) {
+    if (o.pendiente <= 0) return;
+    var disponiblePorDia = margenDiario - comprometido;
+    comprometido += o.porDia;
+    if (o.porDia > disponiblePorDia) {
+      out.push({
+        concepto: o.concepto, fecha: o.fecha, pendiente: o.pendiente, dias: o.dias,
+        necesarioPorDia: o.porDia,
+        disponiblePorDia: Math.round(Math.max(0, disponiblePorDia)),
+        faltantePorDia: Math.round(o.porDia - Math.max(0, disponiblePorDia)),
+        consecuencia: o.consecuencia
+      });
+    }
+  });
+
+  return out;
+}
+
+/** Qué hacer con cada riesgo, en orden de menor a mayor daño. */
+function propuestasParaRiesgo(riesgo, estado, cfg, margenDiario) {
+  var p = [];
+
+  if (estado.fondoLibre > 0) {
+    p.push('Usar ' + pesos(Math.min(estado.fondoLibre, riesgo.pendiente)) +
+           ' del fondo libre: es lo único que no le saca nada al negocio.');
+  }
+
+  var deMasDias = Math.ceil(riesgo.faltantePorDia * riesgo.dias / Math.max(1, margenDiario));
+  if (margenDiario > 0) {
+    p.push('Separar ' + pesos(riesgo.faltantePorDia) + ' más por día durante ' + riesgo.dias +
+           ' días. Equivale a ' + deMasDias + ' días de margen completo.');
+  }
+
+  p.push('Postergar compras de mercadería no urgentes: cada ' +
+         pesos(riesgo.faltantePorDia * riesgo.dias) + ' que no se compra cubre este vencimiento, ' +
+         'pero baja las ventas de las semanas siguientes.');
+
+  if (estado.fondoColchon > 0) {
+    p.push('Tocar el colchón (' + pesos(estado.fondoColchon) + '). Es lo último: ' +
+           'te deja sin red para el próximo día malo.');
+  }
+
+  return p;
+}
+
+// --- Semáforo ---------------------------------------------------------------
+
+function semaforo(estado, objetivos, hoy, margenDiario, cfg) {
+  var lista = estadoDeObjetivos(objetivos, estado, hoy);
+  var enRiesgo = riesgos(objetivos, estado, hoy, margenDiario);
+  var vencidos = lista.filter(function (o) { return o.vencido; });
+  var necesarioTotal = lista.reduce(function (a, o) { return a + o.porDia; }, 0);
+  var objetivoColchon = Number(cfg.COLCHON_MINIMO) || 0;
+
+  if (estado.fondoMercaderia < 0) {
+    return { estado: SEMAFORO.ROJO,
+             porque: 'El fondo de mercadería está en ' + pesos(estado.fondoMercaderia) +
+                     ': se compró más de lo que las ventas repusieron.' };
+  }
+  if (vencidos.length) {
+    return { estado: SEMAFORO.ROJO,
+             porque: vencidos.length + (vencidos.length === 1 ? ' obligación venció' : ' obligaciones vencieron') +
+                     ' sin estar cubiertas: ' +
+                     vencidos.slice(0, 3).map(function (o) { return o.concepto; }).join(', ') +
+                     (vencidos.length > 3 ? ' y ' + (vencidos.length - 3) + ' más' : '') + '.' };
+  }
+  if (enRiesgo.length) {
+    return { estado: SEMAFORO.ROJO,
+             porque: 'Al ritmo actual no se llega a ' + enRiesgo[0].concepto + ' del ' +
+                     formatearFecha(enRiesgo[0].fecha) + ': hacen falta ' +
+                     pesos(enRiesgo[0].necesarioPorDia) + ' por día y hay ' +
+                     pesos(enRiesgo[0].disponiblePorDia) + '.' };
+  }
+  if (margenDiario > 0 && necesarioTotal > margenDiario * 0.8) {
+    return { estado: SEMAFORO.AMARILLO,
+             porque: 'Se llega, pero las obligaciones se comen el ' +
+                     Math.round(necesarioTotal / margenDiario * 100) + '% del margen diario. ' +
+                     'Un par de días flojos y pasa a rojo.' };
+  }
+  if (estado.fondoColchon < objetivoColchon) {
+    return { estado: SEMAFORO.AMARILLO,
+             porque: 'Las obligaciones están cubiertas, pero el colchón tiene ' +
+                     pesos(estado.fondoColchon) + ' de un objetivo de ' + pesos(objetivoColchon) + '.' };
+  }
+  return { estado: SEMAFORO.VERDE,
+           porque: 'Mercadería, obligaciones y colchón cubiertos. Lo que sobra es realmente libre.' };
+}
+
+// --- Criterio ---------------------------------------------------------------
+
+/**
+ * Lectura del estado, no solo los números. Es la parte que dice si estamos
+ * separando de más, comprando de más o juntando plata sin sentido.
+ */
+function diagnostico(estado, objetivos, dias, cfg, hoy) {
+  var obs = [];
+  var lista = estadoDeObjetivos(objetivos, estado, hoy);
+  var margenDiario = margenDiarioPromedio(dias);
+  var reparto_ = reparto(estado, objetivos);
+  var comprasDiarias = dias.length
+    ? dias.reduce(function (a, d) { return a + d.compras; }, 0) / dias.length : 0;
+  var reposicionDiaria = dias.length
+    ? dias.reduce(function (a, d) { return a + d.costoMercaderia; }, 0) / dias.length : 0;
+
+  if (comprasDiarias > reposicionDiaria * 1.15 && dias.length >= 7) {
+    obs.push({ tipo: 'COMPRAS',
+      texto: 'Estás comprando ' + pesos(comprasDiarias) + ' por día contra una reposición de ' +
+             pesos(reposicionDiaria) + '. Comprás más rápido de lo que vendés: eso es stock ' +
+             'inmovilizado y sale de la plata de las obligaciones.' });
+  } else if (comprasDiarias > 0 && comprasDiarias < reposicionDiaria * 0.85 && dias.length >= 7) {
+    obs.push({ tipo: 'COMPRAS',
+      texto: 'Estás comprando ' + pesos(comprasDiarias) + ' por día contra una reposición de ' +
+             pesos(reposicionDiaria) + '. Si no es a propósito, en 2 o 3 semanas se va a notar en las ventas.' });
+  }
+
+  if (estado.fondoMercaderia > reposicionDiaria * 20 && reposicionDiaria > 0) {
+    obs.push({ tipo: 'CAJA',
+      texto: 'El fondo de mercadería tiene ' + pesos(estado.fondoMercaderia) + ', más de 20 días de ' +
+             'reposición. Es plata quieta: o se compra, o se pasa a adelantar obligaciones.' });
+  }
+
+  var todoCubierto = lista.every(function (o) { return o.pendiente === 0; });
+  if (todoCubierto && reparto_.libre > 0) {
+    obs.push({ tipo: 'LIBRE',
+      texto: 'Todas las obligaciones del horizonte están cubiertas y hay ' + pesos(reparto_.libre) +
+             ' libres. Esta plata sí se puede retirar sin comprometer nada.' });
+  }
+
+  if (!todoCubierto && reparto_.libre > margenDiario * 3 && margenDiario > 0) {
+    obs.push({ tipo: 'LIBRE',
+      texto: 'Hay ' + pesos(reparto_.libre) + ' en el fondo libre con obligaciones todavía ' +
+             'descubiertas. Conviene adelantar reservas antes de retirar.' });
+  }
+
+  var objetivoColchon = Number(cfg.COLCHON_MINIMO) || 0;
+  if (estado.fondoColchon < objetivoColchon * 0.5 && objetivoColchon > 0) {
+    obs.push({ tipo: 'COLCHON',
+      texto: 'El colchón está en ' + pesos(estado.fondoColchon) + ' de un objetivo de ' +
+             pesos(objetivoColchon) + '. Sin red, un día malo se paga sacando de mercadería.' });
+  }
+
+  return obs;
+}
+
+// ========================================================================
+// 12_Hoy.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Pantalla "Hoy" y cálculo de la distribución diaria.
+ *
+ * Toda la aritmética vive en 11_Fondos.gs. Acá solo se lee, se llama y se pinta.
+ */
+
+var COLOR_SEMAFORO = {
+  VERDE: { fondo: '#EDF7ED', texto: '#2C6B2F' },
+  AMARILLO: { fondo: '#FFF6E0', texto: '#8A6100' },
+  ROJO: { fondo: '#FBE3E3', texto: '#A02020' }
+};
+
+/** Lee los días cargados, arma los objetivos y reproduce toda la historia. */
+function calcularFondos(ss) {
+  var cfg = leerConfig(ss);
+  var obligaciones = filasDe(ss, ESQUEMA.OBLIGACIONES);
+
+  var problemas = validarObligaciones(obligaciones);
+  if (problemas.length) return { error: 'Arreglá esto primero:\n\n' + problemas.join('\n\n') };
+
+  var dias = filasDe(ss, ESQUEMA.DIA)
+    .filter(function (f) { return esFecha(f[COL_DIA.FECHA]); })
+    .map(function (f) {
+      return { fecha: f[COL_DIA.FECHA], bruto: Number(f[COL_DIA.BRUTO]) || 0,
+               compras: Number(f[COL_DIA.COMPRAS]) || 0 };
+    });
+
+  if (!dias.length) {
+    return { error: 'Cargá al menos un día en la hoja "Dia": fecha y venta bruta.' };
+  }
+
+  var desde = dias[0].fecha;
+  var hasta = sumarDias(new Date(), Number(cfg.HORIZONTE_FONDOS_DIAS) || 60);
+  var brutoDiario = dias.reduce(function (a, d) { return a + d.bruto; }, 0) / dias.length;
+
+  var objetivos = objetivosDeFinanciamiento(obligaciones, desde, hasta, cfg, brutoDiario);
+  var pagados = objetivosPagados(filasDe(ss, ESQUEMA.MOVIMIENTOS), objetivos);
+
+  var historia = reproducirDias(dias, objetivos, cfg, pagados);
+  var ultimo = historia.dias[historia.dias.length - 1];
+  var hoy = ultimo.fecha;
+  var margen = margenDiarioPromedio(historia.dias);
+
+  return {
+    cfg: cfg,
+    objetivos: objetivos,
+    historia: historia,
+    hoy: hoy,
+    dia: ultimo,
+    margenDiario: margen,
+    reparto: reparto(historia.estado, objetivos),
+    fondos: estadoDeObjetivos(objetivos, historia.estado, hoy),
+    riesgos: riesgos(objetivos, historia.estado, hoy, margen),
+    semaforo: semaforo(historia.estado, objetivos, hoy, margen, cfg),
+    diagnostico: diagnostico(historia.estado, objetivos, historia.dias, cfg, hoy)
+  };
+}
+
+/** Un objetivo ya pagado deja de juntar plata. */
+function objetivosPagados(movimientos, objetivos) {
+  var pagados = {};
+  movimientos.forEach(function (m) {
+    var id = String(m[COL_MOV.OBLIGACION] || '').trim();
+    if (!id || !esFecha(m[COL_MOV.FECHA])) return;
+    objetivos.forEach(function (o) {
+      // Se da por pagado el vencimiento de esa obligación más cercano al movimiento.
+      if (o.obligacionId === id && Math.abs(o.fecha - m[COL_MOV.FECHA]) < 10 * MS_DIA) {
+        pagados[o.id] = true;
+      }
+    });
+  });
+  return pagados;
+}
+
+function actualizarHoy() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+
+  if (versionDesactualizada(ss)) {
+    ui.alert('Datos desactualizados', textoDesactualizado(ss), ui.ButtonSet.OK);
+    return;
+  }
+
+  var r = calcularFondos(ss);
+  if (r.error) { ui.alert('No puedo calcular el día', r.error, ui.ButtonSet.OK); return; }
+
+  escribirHoy(ss, r);
+  ss.setActiveSheet(ss.getSheetByName(ESQUEMA.HOY.nombre));
+  ui.alert('NUVELA · Hoy', resumenDelDia(r), ui.ButtonSet.OK);
+}
+
+function escribirHoy(ss, r) {
+  var hoja = ss.getSheetByName(ESQUEMA.HOY.nombre);
+  var def = ESQUEMA.HOY;
+  var d = r.dia;
+
+  hoja.clear();
+  hoja.clearFormats();
+  var f = 1;
+
+  hoja.getRange(f, 1).setValue('HOY').setFontSize(20).setFontWeight('bold')
+      .setFontColor(COLOR.cabeceraEntrada);
+  hoja.getRange(f++, 2).setValue(formatearFecha(r.hoy)).setFontSize(13).setFontColor('#6B7280');
+
+  var color = COLOR_SEMAFORO[r.semaforo.estado];
+  hoja.getRange(f, 1, 1, 6).merge()
+      .setValue(r.semaforo.estado + ' — ' + r.semaforo.porque)
+      .setFontWeight('bold').setBackground(color.fondo).setFontColor(color.texto).setWrap(true);
+  hoja.setRowHeight(f, 40);
+  f += 2;
+
+  // --- De dónde sale la plata del día ---------------------------------------
+  f = bloque(hoja, f, 'EL DÍA', [
+    ['Ventas brutas', d.bruto],
+    ['Ingreso neto', d.neto],
+    ['Costo de lo vendido', -d.costoMercaderia],
+    ['Margen real', d.margen]
+  ]);
+  f++;
+
+  f = bloque(hoja, f, 'CÓMO SE REPARTE', [
+    ['Reserva para mercadería', d.aMercaderia],
+    ['Reserva para obligaciones', d.aObligaciones],
+    ['Al colchón', d.aColchon],
+    ['LIBRE DEL DÍA', d.libre]
+  ]);
+  if (d.adelantado > 0) {
+    hoja.getRange(f++, 1, 1, 4).merge()
+        .setValue('Día bueno: se adelantaron ' + pesos(d.adelantado) + ' de reservas futuras.')
+        .setFontColor('#2C6B2F');
+  }
+  f++;
+
+  // --- Caja partida en cuatro ------------------------------------------------
+  f = bloque(hoja, f, 'CAJA TOTAL: ' + pesos(r.reparto.total), [
+    ['Comprometido en mercadería', r.reparto.mercaderia],
+    ['Reservado para obligaciones', r.reparto.obligaciones],
+    ['Colchón de seguridad', r.reparto.colchon],
+    ['LIBRE DE VERDAD', r.reparto.libre]
+  ]);
+  f++;
+
+  // --- Cada obligación con su fondo -----------------------------------------
+  hoja.getRange(f++, 1).setValue('FONDOS POR OBLIGACIÓN').setFontWeight('bold');
+  var titulos = def.columnas.map(function (c) { return c.titulo; });
+  hoja.getRange(f, 1, 1, titulos.length).setValues([titulos])
+      .setFontWeight('bold').setFontColor(COLOR.textoCabecera).setBackground(COLOR.cabeceraEntrada);
+  f++;
+
+  if (r.fondos.length) {
+    var filas = r.fondos.map(function (o) {
+      return [o.concepto, o.fecha, o.total, o.reservado, o.pendiente,
+              Math.round(d.asignado[o.id] || 0), o.dias, o.porDia];
+    });
+    hoja.getRange(f, 1, filas.length, titulos.length).setValues(filas);
+    hoja.getRange(f, 2, filas.length, 1).setNumberFormat(FECHA);
+    hoja.getRange(f, 3, filas.length, 4).setNumberFormat(MONEDA);
+    hoja.getRange(f, 8, filas.length, 1).setNumberFormat(MONEDA);
+
+    r.fondos.forEach(function (o, i) {
+      if (o.vencido) hoja.getRange(f + i, 1, 1, titulos.length).setBackground('#FBE3E3').setFontColor('#A02020');
+      else if (o.pendiente === 0) hoja.getRange(f + i, 1, 1, titulos.length).setBackground('#EDF7ED').setFontColor('#2C6B2F');
+    });
+    f += filas.length;
+  } else {
+    hoja.getRange(f++, 1).setValue('No hay vencimientos en el horizonte.').setFontStyle('italic');
+  }
+  f += 2;
+
+  f = escribirRiesgos(hoja, f, r);
+  escribirDiagnostico(hoja, f, r);
+
+  def.columnas.forEach(function (c, i) { hoja.setColumnWidth(i + 1, c.ancho); });
+}
+
+/** Un bloque de etiqueta y monto, con la última fila resaltada. */
+function bloque(hoja, f, titulo, filas) {
+  hoja.getRange(f++, 1).setValue(titulo).setFontWeight('bold').setFontColor(COLOR.cabeceraEntrada);
+  filas.forEach(function (par, i) {
+    hoja.getRange(f, 1).setValue(par[0]).setFontColor('#6B7280');
+    var celda = hoja.getRange(f, 2).setValue(par[1]).setNumberFormat(MONEDA);
+    if (i === filas.length - 1) {
+      hoja.getRange(f, 1, 1, 2).setFontWeight('bold');
+      celda.setFontSize(13);
+    }
+    f++;
+  });
+  return f;
+}
+
+function escribirRiesgos(hoja, f, r) {
+  if (!r.riesgos.length) return f;
+
+  hoja.getRange(f++, 1, 1, 6).merge().setValue('ALERTAS')
+      .setFontWeight('bold').setBackground('#FBE3E3').setFontColor('#A02020');
+
+  r.riesgos.forEach(function (x) {
+    hoja.getRange(f++, 1, 1, 6).merge()
+        .setValue('Al ritmo actual no se llega a ' + x.concepto + ' del ' + formatearFecha(x.fecha) +
+                  '. Falta reservar ' + pesos(x.pendiente) + ' en ' + x.dias + ' días: hacen falta ' +
+                  pesos(x.necesarioPorDia) + ' por día y hay ' + pesos(x.disponiblePorDia) + '.')
+        .setFontColor('#A02020').setWrap(true);
+    hoja.setRowHeight(f - 1, 32);
+
+    propuestasParaRiesgo(x, r.historia.estado, r.cfg, r.margenDiario).forEach(function (p) {
+      hoja.getRange(f++, 1, 1, 6).merge().setValue('   → ' + p).setFontColor('#6B7280').setWrap(true);
+    });
+    f++;
+  });
+
+  return f;
+}
+
+function escribirDiagnostico(hoja, f, r) {
+  if (!r.diagnostico.length) return;
+
+  hoja.getRange(f++, 1, 1, 6).merge().setValue('LECTURA')
+      .setFontWeight('bold').setBackground(COLOR.aviso).setFontColor(COLOR.cabeceraEntrada);
+
+  r.diagnostico.forEach(function (o) {
+    hoja.getRange(f++, 1, 1, 6).merge().setValue('· ' + o.texto).setWrap(true);
+    hoja.setRowHeight(f - 1, 32);
+  });
+}
+
+function resumenDelDia(r) {
+  var d = r.dia;
+  var l = [r.semaforo.estado + ' — ' + r.semaforo.porque, ''];
+
+  l.push('Día ' + formatearFecha(r.hoy));
+  l.push('Ventas ' + pesos(d.bruto) + ' · neto ' + pesos(d.neto) + ' · margen ' + pesos(d.margen));
+  l.push('');
+  l.push('Mercadería: ' + pesos(d.aMercaderia));
+  l.push('Obligaciones: ' + pesos(d.aObligaciones) + (d.adelantado > 0 ? ' (adelanté ' + pesos(d.adelantado) + ')' : ''));
+  l.push('Colchón: ' + pesos(d.aColchon));
+  l.push('LIBRE DEL DÍA: ' + pesos(d.libre));
+  l.push('');
+  l.push('Caja total ' + pesos(r.reparto.total) + ' — libre de verdad: ' + pesos(r.reparto.libre));
+
+  if (r.riesgos.length) {
+    l.push('');
+    l.push(r.riesgos.length + (r.riesgos.length === 1 ? ' alerta' : ' alertas') + '. Mirá la hoja "Hoy".');
+  }
+  return l.join('\n');
+}
+
+/** Recalcula el colchón con los números que mueve el negocio hoy. */
+function sugerirColchon() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+  var cfg = leerConfig(ss);
+
+  var desde = new Date();
+  var hasta = sumarDias(desde, 30);
+  var brutoDiario = (Number(cfg.VENTA_BRUTA_SEMANAL_BASE) || 0) / 7;
+  var objetivos = objetivosDeFinanciamiento(filasDe(ss, ESQUEMA.OBLIGACIONES),
+                                            desde, hasta, cfg, brutoDiario);
+  var porDia = obligacionesPorDia(objetivos, desde, hasta);
+  var sugerido = colchonSugerido(cfg, porDia);
+
+  var respuesta = ui.alert('Colchón sugerido',
+    'Con ' + cfg.DIAS_COLCHON + ' días de cobertura:\n\n' +
+    '  Reposición de mercadería: ' + pesos(brutoDiario * cfg.PCT_COSTO_MERCADERIA / 100) + '/día\n' +
+    '  Motomensajería: ' + pesos(brutoDiario * cfg.PCT_MOTOMENSAJERIA / 100) + '/día\n' +
+    '  Obligaciones prorrateadas: ' + pesos(porDia) + '/día\n\n' +
+    'COLCHÓN SUGERIDO: ' + pesos(sugerido) + '\n' +
+    'Actual en Config: ' + pesos(Number(cfg.COLCHON_MINIMO) || 0) + '\n\n' +
+    '¿Lo cargo?', ui.ButtonSet.YES_NO);
+
+  if (respuesta !== ui.Button.YES) return;
+
+  var hoja = ss.getSheetByName(ESQUEMA.CONFIG.nombre);
+  var filas = hoja.getRange(2, 1, hoja.getLastRow() - 1, 2).getValues();
+  for (var i = 0; i < filas.length; i++) {
+    if (String(filas[i][0]).trim() === 'COLCHON_MINIMO') {
+      hoja.getRange(i + 2, 2).setValue(sugerido);
+      ui.alert('Listo', 'COLCHON_MINIMO quedó en ' + pesos(sugerido) + '.', ui.ButtonSet.OK);
+      return;
+    }
+  }
 }
