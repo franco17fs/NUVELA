@@ -4,7 +4,7 @@
  * GENERADO: no editar acá. La fuente son los archivos de cashflow/apps-script/.
  * Para regenerarlo:  node cashflow/build/bundle.js
  *
- * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs, 08_Prioridad.gs, 09_EstaSemana.gs
+ * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs, 08_Prioridad.gs, 09_EstaSemana.gs, 10_Simulador.gs
  *
  * Instalación:
  *   1. En la planilla: Extensiones -> Apps Script
@@ -26,6 +26,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
     .addItem('Actualizar proyección', 'actualizarProyeccion')
+    .addItem('Simular escenario', 'simular')
     .addSeparator()
     .addItem('Activar aviso de los domingos', 'activarAvisoDominical')
     .addItem('Mandarme el aviso ahora', 'avisoSemanal')
@@ -92,7 +93,7 @@ function revisarCarga() {
  * que ya existe. Comparar esta versión contra la de la hoja es lo que hace que
  * el desfasaje se avise en vez de pasar desapercibido.
  */
-var MODELO_VERSION = 3;
+var MODELO_VERSION = 4;
 
 var CONFIG_SEMILLA = [
   ['MODELO_VERSION', MODELO_VERSION, 'versión',
@@ -111,7 +112,10 @@ var CONFIG_SEMILLA = [
    'De cada $100 que paga el comprador, esto es lo que llega a Mercado Pago. ML ya descontó comisión (19,0%), envío (11,2%) e impuestos (2,6%). Medido sobre junio 2026.',
    'MEDIDO'],
   ['LAG_ACREDITACION_DIAS', 1, 'días',
-   'Días entre la venta y la plata disponible. Es 1 porque se paga el adelanto de dinero (~$384.000/mes). Sin adelanto serían entre 7 y 14.',
+   'Días entre la venta y la plata disponible. Es 1 porque se paga el adelanto de dinero. Sin adelanto serían entre 7 y 14.',
+   'MEDIDO'],
+  ['PCT_ADELANTO_DINERO', 3.2, '%',
+   'Lo que cuesta cobrar a 1 día en vez de 7 o 14. Agosto 2026: $384.033 sobre una facturación de $12.148.466. Ya está descontado dentro del 67,3%: el simulador lo devuelve cuando se prueba apagar el adelanto.',
    'MEDIDO'],
   ['PCT_COSTO_MERCADERIA', 46.2, '%',
    'Costo de la mercadería sobre facturación bruta. Junio 2026: $5.073.318 sobre $10.980.981.',
@@ -341,11 +345,16 @@ var ESQUEMA = {
   SIMULADOR: {
     nombre: 'Simulador',
     generada: true,
-    descripcion: 'Escenarios. Se completa en la Etapa 4.',
+    // Mitad entrada y mitad salida: arriba se cargan los supuestos y abajo
+    // el sistema escribe la comparación. Por eso no lleva cabecera fija.
+    libre: true,
+    descripcion: 'Probar un escenario sin tocar la proyección real.',
     columnas: [
-      { titulo: 'Parámetro', ancho: 260 },
-      { titulo: 'Valor', ancho: 160 },
-      { titulo: 'Qué significa', ancho: 560 }
+      { titulo: 'Semana', ancho: 200 },
+      { titulo: 'Base', ancho: 150 },
+      { titulo: 'Escenario', ancho: 150 },
+      { titulo: 'Diferencia', ancho: 150 },
+      { titulo: 'Qué cambia', ancho: 420 }
     ]
   }
 };
@@ -558,6 +567,7 @@ function crearSistema() {
   ));
 
   var agregadas = completarConfig(ss);
+  prepararSimulador(ss);
   marcarGeneradas(ss);
   borrarHojaPorDefecto(ss);
 
@@ -1011,6 +1021,30 @@ function expandirObligaciones(obligaciones, semanas, brutoPorSemana, cfg, hoy) {
   return vencimientos.sort(function (a, b) { return a.fecha - b.fecha; });
 }
 
+/**
+ * Movimientos de un escenario ("qué pasa si compro $X el día D"), convertidos
+ * al mismo formato que los vencimientos reales para que el motor no distinga.
+ * Se descartan los que caen fuera de las 13 semanas.
+ */
+function extrasComoVencimientos(extras, semanas) {
+  if (!extras || !extras.length) return [];
+
+  return extras.map(function (e, i) {
+    return {
+      id: 'SIM-' + (i + 1),
+      fecha: e.fecha,
+      semana: semanaDe(semanas, e.fecha),
+      concepto: e.concepto || 'Movimiento simulado',
+      acreedor: e.acreedor || 'Escenario',
+      categoria: e.categoria || 'MERCADERIA',
+      criticidad: e.criticidad || 4,
+      consecuencia: e.consecuencia || 'Movimiento del escenario.',
+      cuenta: 'MERCADO_PAGO',
+      monto: Math.round(Number(e.monto) || 0)
+    };
+  }).filter(function (e) { return e.semana !== -1 && e.monto > 0; });
+}
+
 // --- Ingresos ---------------------------------------------------------------
 
 /**
@@ -1066,7 +1100,7 @@ function proyectar(entrada) {
 
   var vencimientos = expandirObligaciones(
     entrada.obligaciones, semanas, entrada.brutoPorSemana, cfg, entrada.hoy
-  );
+  ).concat(extrasComoVencimientos(entrada.extras, semanas));
 
   var filas = [];
   var saldo = saldoInicial;
@@ -1183,7 +1217,11 @@ var COLOR_ESTADO = {
  *
  * Devuelve null si los datos no dan para proyectar; el motivo queda en `error`.
  */
-function calcularTodo(ss) {
+/**
+ * Todo lo que el motor necesita, leído de la planilla y ya validado.
+ * Lo usan la proyección y el simulador, así que los dos parten de lo mismo.
+ */
+function entradasDeProyeccion(ss) {
   var cfg = leerConfig(ss);
   var obligaciones = filasDe(ss, ESQUEMA.OBLIGACIONES);
 
@@ -1197,27 +1235,32 @@ function calcularTodo(ss) {
     return { numero: i + 1, desde: f[COL_VENTAS.DESDE], hasta: f[COL_VENTAS.HASTA] };
   });
 
-  // El real manda sobre el proyectado: una semana ya cerrada no se estima.
-  var brutoPorSemana = ventas.map(function (f) {
-    return Number(f[COL_VENTAS.REAL]) || Number(f[COL_VENTAS.PROYECTADO]) || 0;
-  });
-
-  var resultado = proyectar({
+  return {
     semanas: semanas,
-    brutoPorSemana: brutoPorSemana,
+    // El real manda sobre el proyectado: una semana ya cerrada no se estima.
+    brutoPorSemana: ventas.map(function (f) {
+      return Number(f[COL_VENTAS.REAL]) || Number(f[COL_VENTAS.PROYECTADO]) || 0;
+    }),
     obligaciones: obligaciones,
     cfg: cfg,
     hoy: new Date(),
     pagados: pagosPorSemana(filasDe(ss, ESQUEMA.MOVIMIENTOS), semanas)
-  });
+  };
+}
+
+function calcularTodo(ss) {
+  var base = entradasDeProyeccion(ss);
+  if (base.error) return base;
+
+  var resultado = proyectar(base);
 
   // La plata con la que se cuenta esta semana: lo que hay más lo que entra.
   var semana1 = resultado.filas[0];
   resultado.plan = planDePago(semana1.vencimientos, semana1.saldoInicial + semana1.ingresos);
-  resultado.cfg = cfg;
-  resultado.brutoPorSemana = brutoPorSemana;
+  resultado.cfg = base.cfg;
+  resultado.brutoPorSemana = base.brutoPorSemana;
   resultado.deudas = filasDe(ss, ESQUEMA.DEUDAS);
-  resultado.avisos = avisosDeObligaciones(obligaciones);
+  resultado.avisos = avisosDeObligaciones(base.obligaciones);
   return resultado;
 }
 
@@ -1756,4 +1799,267 @@ function activarAvisoDominical() {
     'Para que llegue también por WhatsApp, cargá WHATSAPP_NUMERO y CALLMEBOT_APIKEY en Config.',
     SpreadsheetApp.getUi().ButtonSet.OK
   );
+}
+
+// ========================================================================
+// 10_Simulador.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Simulador de escenarios.
+ *
+ * Contesta "si compro $X el día D, ¿en qué semana me quedo corto?" corriendo
+ * la misma proyección dos veces —base y escenario— y comparándolas.
+ *
+ * No toca la proyección real: es una hoja aparte que se puede tirar y rehacer.
+ */
+
+// Celdas de entrada del escenario. Fijas para poder leerlas sin buscar.
+var SIM = {
+  MONTO: 'B4', FECHA: 'B5', AJUSTE_VENTAS: 'B6', LAG: 'B7',
+  PRIMERA_SALIDA: 10
+};
+
+/**
+ * Aplica un escenario sobre las entradas de la proyección.
+ * Puro: devuelve entradas nuevas, no modifica las que recibe.
+ */
+function aplicarEscenario(base, escenario) {
+  var ajuste = 1 + (Number(escenario.ajusteVentasPct) || 0) / 100;
+  var cfg = {};
+  for (var k in base.cfg) cfg[k] = base.cfg[k];
+
+  if (escenario.lagDias > 0) {
+    // Estirar el plazo significa dejar de pagar el adelanto de dinero, y su
+    // costo está descontado dentro de PCT_NETO_SOBRE_BRUTO. Si solo se corriera
+    // la fecha, el escenario seguiría cobrando una comisión que ya no existe y
+    // apagar el adelanto daría peor de lo que realmente es.
+    if (escenario.lagDias > Number(base.cfg.LAG_ACREDITACION_DIAS)) {
+      cfg.PCT_NETO_SOBRE_BRUTO = Number(base.cfg.PCT_NETO_SOBRE_BRUTO) +
+                                 Number(base.cfg.PCT_ADELANTO_DINERO || 0);
+    }
+    cfg.LAG_ACREDITACION_DIAS = escenario.lagDias;
+  }
+
+  return {
+    semanas: base.semanas,
+    brutoPorSemana: base.brutoPorSemana.map(function (b) { return b * ajuste; }),
+    obligaciones: base.obligaciones,
+    cfg: cfg,
+    hoy: base.hoy,
+    pagados: base.pagados,
+    extras: escenario.movimientos || []
+  };
+}
+
+/**
+ * Corre base y escenario y arma la comparación semana a semana.
+ * Lo que importa es el corrimiento del quiebre: adelantarlo una semana es
+ * peor que cualquier diferencia de saldo.
+ */
+function compararEscenarios(base, escenario) {
+  var a = proyectar(base);
+  var b = proyectar(aplicarEscenario(base, escenario));
+
+  var semanas = a.filas.map(function (f, i) {
+    return {
+      numero: f.numero,
+      desde: f.desde,
+      hasta: f.hasta,
+      base: f.saldoFinal,
+      escenario: b.filas[i].saldoFinal,
+      diferencia: b.filas[i].saldoFinal - f.saldoFinal,
+      estadoBase: f.estado,
+      estadoEscenario: b.filas[i].estado
+    };
+  });
+
+  return {
+    base: a,
+    escenario: b,
+    semanas: semanas,
+    quiebreBase: a.quiebre,
+    quiebreEscenario: b.quiebre,
+    corrimiento: corrimientoDelQuiebre(a.quiebre, b.quiebre),
+    cierreBase: a.filas[a.filas.length - 1].saldoFinal,
+    cierreEscenario: b.filas[b.filas.length - 1].saldoFinal,
+    nota: notaDelEscenario(base, escenario)
+  };
+}
+
+/**
+ * Avisos sobre cómo leer la comparación.
+ *
+ * Estirar el plazo de acreditación corre las ventas de las últimas semanas más
+ * allá del horizonte: esa plata no se pierde, entra después de la semana 13.
+ * El cierre queda peor de lo que realmente es, así que hay que mirar el
+ * quiebre y las primeras semanas, no el saldo final.
+ */
+function notaDelEscenario(base, escenario) {
+  var lagBase = Number(base.cfg.LAG_ACREDITACION_DIAS) || 0;
+  if (!escenario.lagDias || escenario.lagDias <= lagBase) return '';
+
+  var semanasFuera = Math.ceil((escenario.lagDias - lagBase) / 7);
+  return 'Ojo con el cierre: al estirar el plazo a ' + escenario.lagDias + ' días, las ventas de ' +
+         'las últimas ' + semanasFuera + (semanasFuera === 1 ? ' semana' : ' semanas') +
+         ' se acreditan después de la semana 13 y quedan fuera del cuadro. Esa plata no se pierde. ' +
+         'Para decidir, mirá el quiebre y las primeras semanas, no el saldo final.';
+}
+
+/**
+ * Cuántas semanas se adelanta o se atrasa el quiebre.
+ * Negativo = se adelanta (peor). Positivo = se corre para adelante (mejor).
+ */
+function corrimientoDelQuiebre(base, escenario) {
+  if (!base && !escenario) return { texto: 'Sigue sin haber quiebre.', semanas: 0 };
+  if (!base && escenario) return { texto: 'Aparece un quiebre en la semana ' + escenario.semana + '.', semanas: -99 };
+  if (base && !escenario) return { texto: 'Desaparece el quiebre de la semana ' + base.semana + '.', semanas: 99 };
+
+  var d = escenario.semana - base.semana;
+  if (d === 0) return { texto: 'El quiebre sigue en la semana ' + base.semana + '.', semanas: 0 };
+  return {
+    semanas: d,
+    texto: d < 0
+      ? 'El quiebre se adelanta ' + (-d) + (-d === 1 ? ' semana' : ' semanas') +
+        ': pasa de la ' + base.semana + ' a la ' + escenario.semana + '.'
+      : 'El quiebre se corre ' + d + (d === 1 ? ' semana' : ' semanas') +
+        ': pasa de la ' + base.semana + ' a la ' + escenario.semana + '.'
+  };
+}
+
+// --- Hoja -------------------------------------------------------------------
+
+/** Escribe el bloque de entrada una sola vez, sin pisar lo que ya haya. */
+function prepararSimulador(ss) {
+  var hoja = ss.getSheetByName(ESQUEMA.SIMULADOR.nombre);
+  if (String(hoja.getRange('A4').getValue()).indexOf('Compro') === 0) return;
+
+  hoja.clear();
+  hoja.getRange('A1').setValue('SIMULADOR').setFontSize(20).setFontWeight('bold')
+      .setFontColor(COLOR.cabeceraEntrada);
+  hoja.getRange('A2').setValue('Cambiá los valores de abajo y corré "Simular escenario" en el menú.')
+      .setFontColor('#6B7280');
+
+  var entradas = [
+    ['Compro mercadería por', 2000000, 'Un gasto extra que no está en la proyección. Dejalo en 0 para no agregar nada.'],
+    ['el día', new Date(), 'Cuándo lo pagás. Es lo que se mueve para ver si destraba una semana.'],
+    ['Ajusto las ventas en (%)', 0, 'Sube o baja las 13 semanas. -20 simula un mes flojo; 15, uno bueno.'],
+    ['Plazo de acreditación (días)', 1, 'Hoy es 1 porque pagás el adelanto de dinero. Poné 7 o 14 para ver qué pasa si lo apagás.']
+  ];
+  hoja.getRange(4, 1, entradas.length, 3).setValues(entradas);
+  hoja.getRange(4, 2, entradas.length, 1).setBackground('#ECF6FD').setFontWeight('bold');
+  hoja.getRange(SIM.MONTO).setNumberFormat(MONEDA);
+  hoja.getRange(SIM.FECHA).setNumberFormat(FECHA);
+  hoja.getRange(4, 3, entradas.length, 1).setFontColor('#6B7280').setWrap(true);
+
+  ESQUEMA.SIMULADOR.columnas.forEach(function (c, i) { hoja.setColumnWidth(i + 1, c.ancho); });
+}
+
+function simular() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+
+  if (versionDesactualizada(ss)) {
+    ui.alert('Datos desactualizados', textoDesactualizado(ss), ui.ButtonSet.OK);
+    return;
+  }
+
+  var base = entradasDeProyeccion(ss);
+  if (base.error) {
+    ui.alert('No puedo simular', base.error, ui.ButtonSet.OK);
+    return;
+  }
+
+  prepararSimulador(ss);
+  var hoja = ss.getSheetByName(ESQUEMA.SIMULADOR.nombre);
+  var monto = Number(hoja.getRange(SIM.MONTO).getValue()) || 0;
+  var fecha = hoja.getRange(SIM.FECHA).getValue();
+
+  var comparacion = compararEscenarios(base, {
+    movimientos: (monto > 0 && esFecha(fecha))
+      ? [{ concepto: 'Compra simulada', acreedor: 'Escenario', monto: monto, fecha: fecha }]
+      : [],
+    ajusteVentasPct: Number(hoja.getRange(SIM.AJUSTE_VENTAS).getValue()) || 0,
+    lagDias: Number(hoja.getRange(SIM.LAG).getValue()) || 0
+  });
+
+  escribirSimulacion(hoja, comparacion);
+  ss.setActiveSheet(hoja);
+  ui.alert('Simulador', resumenDeSimulacion(comparacion), ui.ButtonSet.OK);
+}
+
+function escribirSimulacion(hoja, c) {
+  var f = SIM.PRIMERA_SALIDA;
+  if (hoja.getLastRow() >= f) {
+    hoja.getRange(f, 1, hoja.getLastRow() - f + 1, 5).clear();
+  }
+
+  hoja.getRange(f, 1, 1, 5).merge().setValue(c.corrimiento.texto)
+      .setFontSize(14).setFontWeight('bold')
+      .setBackground(c.corrimiento.semanas < 0 ? '#FBE3E3' : '#EDF7ED')
+      .setFontColor(c.corrimiento.semanas < 0 ? '#A02020' : '#2C6B2F')
+      .setHorizontalAlignment('center');
+  f++;
+
+  if (c.nota) {
+    hoja.getRange(f, 1, 1, 5).merge().setValue(c.nota)
+        .setBackground('#FFF6E0').setFontColor('#8A6100').setWrap(true);
+    hoja.setRowHeight(f, 46);
+    f++;
+  }
+  f++;
+
+  var cabecera = ESQUEMA.SIMULADOR.columnas.map(function (col) { return col.titulo; });
+  hoja.getRange(f, 1, 1, cabecera.length).setValues([cabecera])
+      .setFontWeight('bold').setFontColor(COLOR.textoCabecera).setBackground(COLOR.cabeceraEntrada);
+  f++;
+
+  var filas = c.semanas.map(function (s) {
+    return ['Semana ' + s.numero + ' · ' + formatearFecha(s.desde),
+            s.base, s.escenario, s.diferencia, cambioDeEstado(s)];
+  });
+  hoja.getRange(f, 1, filas.length, 5).setValues(filas);
+  hoja.getRange(f, 2, filas.length, 3).setNumberFormat(MONEDA);
+
+  c.semanas.forEach(function (s, i) {
+    if (s.estadoEscenario === ESTADO.ROJO && s.estadoBase !== ESTADO.ROJO) {
+      hoja.getRange(f + i, 1, 1, 5).setBackground('#FBE3E3').setFontColor('#A02020');
+    } else if (s.estadoBase === ESTADO.ROJO && s.estadoEscenario !== ESTADO.ROJO) {
+      hoja.getRange(f + i, 1, 1, 5).setBackground('#EDF7ED').setFontColor('#2C6B2F');
+    }
+  });
+
+  f += filas.length + 1;
+  hoja.getRange(f, 1).setValue('Cierre a 13 semanas').setFontWeight('bold');
+  hoja.getRange(f, 2, 1, 3).setValues([[c.cierreBase, c.cierreEscenario,
+                                        c.cierreEscenario - c.cierreBase]])
+      .setNumberFormat(MONEDA).setFontWeight('bold');
+}
+
+function cambioDeEstado(s) {
+  if (s.estadoBase === s.estadoEscenario) return '';
+  if (s.estadoEscenario === ESTADO.ROJO) return 'Se pone en rojo';
+  if (s.estadoBase === ESTADO.ROJO) return 'Deja de estar en rojo';
+  if (s.estadoEscenario === ESTADO.ATENCION) return 'Baja del colchón';
+  return 'Sale del colchón';
+}
+
+function resumenDeSimulacion(c) {
+  var l = [c.corrimiento.texto, ''];
+
+  if (c.quiebreEscenario) {
+    l.push('En el escenario, el quiebre es la semana ' + c.quiebreEscenario.semana +
+           ' (' + formatearFecha(c.quiebreEscenario.desde) + ') y faltan ' +
+           pesos(c.quiebreEscenario.faltan) + '.');
+  } else {
+    l.push('En el escenario ninguna semana cierra en negativo.');
+  }
+
+  var delta = c.cierreEscenario - c.cierreBase;
+  l.push('');
+  l.push('Cierre a 13 semanas: ' + pesos(c.cierreBase) + ' → ' + pesos(c.cierreEscenario) +
+         ' (' + (delta >= 0 ? '+' : '') + pesos(delta) + ').');
+
+  if (c.nota) { l.push(''); l.push(c.nota); }
+  return l.join('\n');
 }

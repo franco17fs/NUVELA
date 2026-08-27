@@ -16,7 +16,11 @@ var COLOR_ESTADO = {
  *
  * Devuelve null si los datos no dan para proyectar; el motivo queda en `error`.
  */
-function calcularTodo(ss) {
+/**
+ * Todo lo que el motor necesita, leído de la planilla y ya validado.
+ * Lo usan la proyección y el simulador, así que los dos parten de lo mismo.
+ */
+function entradasDeProyeccion(ss) {
   var cfg = leerConfig(ss);
   var obligaciones = filasDe(ss, ESQUEMA.OBLIGACIONES);
 
@@ -30,27 +34,32 @@ function calcularTodo(ss) {
     return { numero: i + 1, desde: f[COL_VENTAS.DESDE], hasta: f[COL_VENTAS.HASTA] };
   });
 
-  // El real manda sobre el proyectado: una semana ya cerrada no se estima.
-  var brutoPorSemana = ventas.map(function (f) {
-    return Number(f[COL_VENTAS.REAL]) || Number(f[COL_VENTAS.PROYECTADO]) || 0;
-  });
-
-  var resultado = proyectar({
+  return {
     semanas: semanas,
-    brutoPorSemana: brutoPorSemana,
+    // El real manda sobre el proyectado: una semana ya cerrada no se estima.
+    brutoPorSemana: ventas.map(function (f) {
+      return Number(f[COL_VENTAS.REAL]) || Number(f[COL_VENTAS.PROYECTADO]) || 0;
+    }),
     obligaciones: obligaciones,
     cfg: cfg,
     hoy: new Date(),
     pagados: pagosPorSemana(filasDe(ss, ESQUEMA.MOVIMIENTOS), semanas)
-  });
+  };
+}
+
+function calcularTodo(ss) {
+  var base = entradasDeProyeccion(ss);
+  if (base.error) return base;
+
+  var resultado = proyectar(base);
 
   // La plata con la que se cuenta esta semana: lo que hay más lo que entra.
   var semana1 = resultado.filas[0];
   resultado.plan = planDePago(semana1.vencimientos, semana1.saldoInicial + semana1.ingresos);
-  resultado.cfg = cfg;
-  resultado.brutoPorSemana = brutoPorSemana;
+  resultado.cfg = base.cfg;
+  resultado.brutoPorSemana = base.brutoPorSemana;
   resultado.deudas = filasDe(ss, ESQUEMA.DEUDAS);
-  resultado.avisos = avisosDeObligaciones(obligaciones);
+  resultado.avisos = avisosDeObligaciones(base.obligaciones);
   return resultado;
 }
 

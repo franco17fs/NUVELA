@@ -43,6 +43,7 @@ function crearSistema() {
   ));
 
   var agregadas = completarConfig(ss);
+  prepararSimulador(ss);
   marcarGeneradas(ss);
   borrarHojaPorDefecto(ss);
 

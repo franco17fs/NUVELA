@@ -153,6 +153,30 @@ function expandirObligaciones(obligaciones, semanas, brutoPorSemana, cfg, hoy) {
   return vencimientos.sort(function (a, b) { return a.fecha - b.fecha; });
 }
 
+/**
+ * Movimientos de un escenario ("qué pasa si compro $X el día D"), convertidos
+ * al mismo formato que los vencimientos reales para que el motor no distinga.
+ * Se descartan los que caen fuera de las 13 semanas.
+ */
+function extrasComoVencimientos(extras, semanas) {
+  if (!extras || !extras.length) return [];
+
+  return extras.map(function (e, i) {
+    return {
+      id: 'SIM-' + (i + 1),
+      fecha: e.fecha,
+      semana: semanaDe(semanas, e.fecha),
+      concepto: e.concepto || 'Movimiento simulado',
+      acreedor: e.acreedor || 'Escenario',
+      categoria: e.categoria || 'MERCADERIA',
+      criticidad: e.criticidad || 4,
+      consecuencia: e.consecuencia || 'Movimiento del escenario.',
+      cuenta: 'MERCADO_PAGO',
+      monto: Math.round(Number(e.monto) || 0)
+    };
+  }).filter(function (e) { return e.semana !== -1 && e.monto > 0; });
+}
+
 // --- Ingresos ---------------------------------------------------------------
 
 /**
@@ -208,7 +232,7 @@ function proyectar(entrada) {
 
   var vencimientos = expandirObligaciones(
     entrada.obligaciones, semanas, entrada.brutoPorSemana, cfg, entrada.hoy
-  );
+  ).concat(extrasComoVencimientos(entrada.extras, semanas));
 
   var filas = [];
   var saldo = saldoInicial;

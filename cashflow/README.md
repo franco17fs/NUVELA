@@ -11,7 +11,7 @@ y **si no alcanza, qué se paga primero y qué queda afuera**.
 | 1 | Modelo de datos + carga de las obligaciones reales | ✅ listo |
 | 2 | Proyección de 13 semanas | ✅ listo |
 | 3 | Priorización y alertas | ✅ listo |
-| 4 | Simulador de escenarios | pendiente |
+| 4 | Simulador de escenarios | ✅ listo |
 | 5 | Conector de la API de Mercado Libre | pendiente |
 
 ## Instalación (una sola vez, ~3 minutos)
@@ -104,6 +104,29 @@ Si faltan $47.000 para una compra de $1.293.600, el déficit es $47.000 y el fal
 $1.293.600. El déficit es el número para salir a buscar plata; el faltante es lo que se
 deja de hacer si no aparece. Confundirlos lleva a decisiones equivocadas, así que van
 separados en todos lados.
+
+## Simulador
+
+`Simular escenario` corre la proyección dos veces —base y escenario— y las compara
+semana a semana. Los supuestos se cargan arriba de la hoja `Simulador`:
+
+| Entrada | Para qué |
+|---|---|
+| Compro mercadería por / el día | La pregunta original: mover una compra y ver si destraba una semana |
+| Ajusto las ventas en (%) | Un mes flojo o uno bueno sobre las 13 semanas |
+| Plazo de acreditación (días) | Poner 7 o 14 simula apagar el adelanto de dinero |
+
+Lo que se lee primero no es el saldo sino **el corrimiento del quiebre**: adelantarlo
+una semana es peor que cualquier diferencia de pesos.
+
+Apagar el adelanto devuelve su costo (`PCT_ADELANTO_DINERO`, 3,2%), que está descontado
+dentro del 67,3%. Sin eso el escenario seguiría cobrando una comisión que ya no se paga
+y la palanca daría siempre peor de lo que es.
+
+**Una advertencia que el simulador da solo:** estirar el plazo corre las ventas de las
+últimas semanas más allá del horizonte de 13 semanas. Esa plata no se pierde — entra
+después. El cierre queda peor de lo que realmente es, así que para decidir hay que mirar
+el quiebre y las primeras semanas.
 
 ## Avisos
 

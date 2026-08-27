@@ -17,7 +17,7 @@
  * que ya existe. Comparar esta versión contra la de la hoja es lo que hace que
  * el desfasaje se avise en vez de pasar desapercibido.
  */
-var MODELO_VERSION = 3;
+var MODELO_VERSION = 4;
 
 var CONFIG_SEMILLA = [
   ['MODELO_VERSION', MODELO_VERSION, 'versión',
@@ -36,7 +36,10 @@ var CONFIG_SEMILLA = [
    'De cada $100 que paga el comprador, esto es lo que llega a Mercado Pago. ML ya descontó comisión (19,0%), envío (11,2%) e impuestos (2,6%). Medido sobre junio 2026.',
    'MEDIDO'],
   ['LAG_ACREDITACION_DIAS', 1, 'días',
-   'Días entre la venta y la plata disponible. Es 1 porque se paga el adelanto de dinero (~$384.000/mes). Sin adelanto serían entre 7 y 14.',
+   'Días entre la venta y la plata disponible. Es 1 porque se paga el adelanto de dinero. Sin adelanto serían entre 7 y 14.',
+   'MEDIDO'],
+  ['PCT_ADELANTO_DINERO', 3.2, '%',
+   'Lo que cuesta cobrar a 1 día en vez de 7 o 14. Agosto 2026: $384.033 sobre una facturación de $12.148.466. Ya está descontado dentro del 67,3%: el simulador lo devuelve cuando se prueba apagar el adelanto.',
    'MEDIDO'],
   ['PCT_COSTO_MERCADERIA', 46.2, '%',
    'Costo de la mercadería sobre facturación bruta. Junio 2026: $5.073.318 sobre $10.980.981.',

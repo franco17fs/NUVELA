@@ -158,11 +158,16 @@ var ESQUEMA = {
   SIMULADOR: {
     nombre: 'Simulador',
     generada: true,
-    descripcion: 'Escenarios. Se completa en la Etapa 4.',
+    // Mitad entrada y mitad salida: arriba se cargan los supuestos y abajo
+    // el sistema escribe la comparación. Por eso no lleva cabecera fija.
+    libre: true,
+    descripcion: 'Probar un escenario sin tocar la proyección real.',
     columnas: [
-      { titulo: 'Parámetro', ancho: 260 },
-      { titulo: 'Valor', ancho: 160 },
-      { titulo: 'Qué significa', ancho: 560 }
+      { titulo: 'Semana', ancho: 200 },
+      { titulo: 'Base', ancho: 150 },
+      { titulo: 'Escenario', ancho: 150 },
+      { titulo: 'Diferencia', ancho: 150 },
+      { titulo: 'Qué cambia', ancho: 420 }
     ]
   }
 };
