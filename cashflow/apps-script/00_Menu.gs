@@ -8,6 +8,9 @@ function onOpen() {
     .createMenu('NUVELA Cashflow')
     .addItem('Actualizar proyección', 'actualizarProyeccion')
     .addSeparator()
+    .addItem('Activar aviso de los domingos', 'activarAvisoDominical')
+    .addItem('Mandarme el aviso ahora', 'avisoSemanal')
+    .addSeparator()
     .addItem('Crear / reparar sistema', 'crearSistema')
     .addItem('Revisar carga', 'revisarCarga')
     .addToUi();

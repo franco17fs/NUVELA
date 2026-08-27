@@ -214,9 +214,12 @@ function proyectar(entrada) {
   var saldo = saldoInicial;
 
   for (var i = 0; i < semanas.length; i++) {
-    var delSemana = vencimientos.filter(function (v) {
-      return v.semana === i && !(entrada.pagados || {})[v.id + '|' + i];
-    });
+    var pagados = entrada.pagados || {};
+    var todos = vencimientos.filter(function (v) { return v.semana === i; });
+    // Los ya pagados no se restan de nuevo, pero se guardan: "Esta Semana"
+    // tiene que mostrar la semana completa, incluido lo que ya se hizo.
+    var yaPagados = todos.filter(function (v) { return pagados[v.id + '|' + i]; });
+    var delSemana = todos.filter(function (v) { return !pagados[v.id + '|' + i]; });
 
     var egresos = { mercaderia: 0, impuestos: 0, deuda: 0, fijos: 0 };
     delSemana.forEach(function (v) {
@@ -239,7 +242,8 @@ function proyectar(entrada) {
       deuda: egresos.deuda,
       saldoFinal: Math.round(saldoFinal),
       estado: saldoFinal < 0 ? ESTADO.ROJO : (saldoFinal < colchon ? ESTADO.ATENCION : ESTADO.OK),
-      vencimientos: delSemana
+      vencimientos: delSemana,
+      yaPagados: yaPagados
     });
 
     saldo = saldoFinal;
@@ -282,6 +286,10 @@ function resumenDeSemana(fila, cuantos) {
     .slice(0, cuantos || 3)
     .map(function (v) { return v.concepto + ' ' + pesos(v.monto); })
     .join(' · ');
+}
+
+function formatearFecha(d) {
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2);
 }
 
 function pesos(n) {

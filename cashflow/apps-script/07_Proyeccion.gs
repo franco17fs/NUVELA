@@ -10,26 +10,21 @@ var COLOR_ESTADO = {
   OK: { fondo: null, texto: null }
 };
 
-function actualizarProyeccion() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+/**
+ * Lee la planilla, proyecta y arma el plan de pago de la semana en curso.
+ * Lo usan tanto el menú como el aviso automático del domingo.
+ *
+ * Devuelve null si los datos no dan para proyectar; el motivo queda en `error`.
+ */
+function calcularTodo(ss) {
   var cfg = leerConfig(ss);
-  var hoy = new Date();
+  var obligaciones = filasDe(ss, ESQUEMA.OBLIGACIONES);
 
-  var problemas = validarObligaciones(filasDe(ss, ESQUEMA.OBLIGACIONES));
-  if (problemas.length) {
-    SpreadsheetApp.getUi().alert(
-      'No proyecto con datos rotos',
-      'Arreglá esto primero:\n\n' + problemas.join('\n\n'),
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
-    return;
-  }
+  var problemas = validarObligaciones(obligaciones);
+  if (problemas.length) return { error: 'Arreglá esto primero:\n\n' + problemas.join('\n\n') };
 
   var ventas = filasDe(ss, ESQUEMA.VENTAS).filter(function (f) { return esFecha(f[COL_VENTAS.DESDE]); });
-  if (!ventas.length) {
-    SpreadsheetApp.getUi().alert('Falta cargar la hoja Ventas.');
-    return;
-  }
+  if (!ventas.length) return { error: 'Falta cargar la hoja Ventas.' };
 
   var semanas = ventas.map(function (f, i) {
     return { numero: i + 1, desde: f[COL_VENTAS.DESDE], hasta: f[COL_VENTAS.HASTA] };
@@ -43,16 +38,37 @@ function actualizarProyeccion() {
   var resultado = proyectar({
     semanas: semanas,
     brutoPorSemana: brutoPorSemana,
-    obligaciones: filasDe(ss, ESQUEMA.OBLIGACIONES),
+    obligaciones: obligaciones,
     cfg: cfg,
-    hoy: hoy,
+    hoy: new Date(),
     pagados: pagosPorSemana(filasDe(ss, ESQUEMA.MOVIMIENTOS), semanas)
   });
 
-  escribirNetoEstimado(ss, brutoPorSemana, Number(cfg.PCT_NETO_SOBRE_BRUTO) || 0);
-  escribirCashflow(ss, resultado, hoy);
+  // La plata con la que se cuenta esta semana: lo que hay más lo que entra.
+  var semana1 = resultado.filas[0];
+  resultado.plan = planDePago(semana1.vencimientos, semana1.saldoInicial + semana1.ingresos);
+  resultado.cfg = cfg;
+  resultado.brutoPorSemana = brutoPorSemana;
+  resultado.deudas = filasDe(ss, ESQUEMA.DEUDAS);
+  return resultado;
+}
 
-  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensajeResumen(resultado, cfg),
+function actualizarProyeccion() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var resultado = calcularTodo(ss);
+
+  if (resultado.error) {
+    SpreadsheetApp.getUi().alert('No proyecto con datos rotos', resultado.error,
+                                 SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  escribirNetoEstimado(ss, resultado.brutoPorSemana, Number(resultado.cfg.PCT_NETO_SOBRE_BRUTO) || 0);
+  escribirCashflow(ss, resultado, new Date());
+  escribirEstaSemana(ss, resultado, resultado.plan, resultado.deudas);
+
+  ss.setActiveSheet(ss.getSheetByName(ESQUEMA.ESTA_SEMANA.nombre));
+  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensajeResumen(resultado, resultado.cfg),
                                SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
@@ -136,7 +152,14 @@ function detalleDe(fila, quiebre, hoy) {
 function mensajeResumen(resultado, cfg) {
   var quiebre = resultado.quiebre;
   var ultima = resultado.filas[resultado.filas.length - 1];
+  var plan = resultado.plan;
   var lineas = ['Proyección actualizada: ' + resultado.filas.length + ' semanas.', ''];
+
+  lineas.push(plan.alcanza
+    ? 'Esta semana alcanza: te sobran ' + pesos(plan.sobrante) + '.'
+    : 'ESTA SEMANA TE FALTAN ' + pesos(plan.deficit) + ' — quedan ' + plan.sinPagar.length +
+      ' vencimientos sin pagar. Mirá "Esta Semana".');
+  lineas.push('');
 
   if (quiebre) {
     lineas.push('QUIEBRE en la semana ' + quiebre.semana +
@@ -152,8 +175,4 @@ function mensajeResumen(resultado, cfg) {
 
   lineas.push('', 'Saldo al cierre de la semana ' + ultima.numero + ': ' + pesos(ultima.saldoFinal) + '.');
   return lineas.join('\n');
-}
-
-function formatearFecha(d) {
-  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2);
 }

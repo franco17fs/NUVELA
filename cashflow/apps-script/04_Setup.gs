@@ -55,6 +55,7 @@ function crearSistema() {
 }
 
 function escribirCabecera(hoja, def) {
+  if (def.libre) return;   // arma su propio layout al generarse
   var titulos = def.columnas.map(function (c) { return c.titulo; });
   var rango = hoja.getRange(1, 1, 1, titulos.length);
   rango.setValues([titulos])
@@ -113,8 +114,8 @@ function marcarGeneradas(ss) {
     if (!def.generada) return;
     var hoja = ss.getSheetByName(def.nombre);
     if (hoja.getLastRow() > 1) return;
-    hoja.getRange(2, 1)
-        .setValue('Esta hoja la escribe el sistema. Se completa en la etapa siguiente.')
+    hoja.getRange(def.libre ? 1 : 2, 1)
+        .setValue('Esta hoja la escribe el sistema. Corré "Actualizar proyección" para llenarla.')
         .setFontColor('#8A8F9A')
         .setFontStyle('italic');
   });

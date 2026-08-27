@@ -10,9 +10,9 @@ y **si no alcanza, qué se paga primero y qué queda afuera**.
 |---|---|---|
 | 1 | Modelo de datos + carga de las obligaciones reales | ✅ listo |
 | 2 | Proyección de 13 semanas | ✅ listo |
-| 3 | Priorización y alertas | pendiente |
+| 3 | Priorización y alertas | ✅ listo |
 | 4 | Simulador de escenarios | pendiente |
-| 5 | Importación automática de liquidaciones de ML | pendiente |
+| 5 | Conector de la API de Mercado Libre | pendiente |
 
 ## Instalación (una sola vez, ~3 minutos)
 
@@ -80,6 +80,41 @@ arma cada término:
 
 Rojo = cierra en negativo. Amarillo = queda por debajo del colchón. El aviso dice qué
 semana rompe, cuánto falta y cuántos días hay de anticipación.
+
+## Cómo prioriza cuando no alcanza
+
+El orden sale de la planilla, no del código:
+
+1. **Criticidad**, de mayor a menor. Está cargada a mano en `Obligaciones`, así que se
+   cambia editando una celda.
+2. A igual criticidad, **lo que vence antes**.
+3. A igual fecha, **lo más barato primero**: con plata limitada, pagar los chicos deja
+   menos acreedores golpeados que pagar uno grande.
+
+Un vencimiento grande que no entra **no bloquea** a los chicos que siguen. El sistema
+no decide: ordena, muestra hasta dónde llega la plata, y al lado de cada cosa que queda
+afuera pone la consecuencia que vos escribiste.
+
+### Dos números que no son lo mismo
+
+- **Déficit** — cuánta plata hay que conseguir para pagar todo.
+- **Faltante** — cuánto suma lo que queda entero sin pagar.
+
+Si faltan $47.000 para una compra de $1.293.600, el déficit es $47.000 y el faltante
+$1.293.600. El déficit es el número para salir a buscar plata; el faltante es lo que se
+deja de hacer si no aparece. Confundirlos lleva a decisiones equivocadas, así que van
+separados en todos lados.
+
+## Avisos
+
+**Activar aviso de los domingos** programa un disparador para las 20 hs. Llega por mail
+siempre. Para que llegue también por WhatsApp, cargá en `Config`:
+
+- `WHATSAPP_NUMERO` — con código de país, sin espacios
+- `CALLMEBOT_APIKEY` — mandarle `I allow callmebot to send me messages` al
+  +34 644 51 95 23 desde el celular y devuelve la clave
+
+Si WhatsApp falla, el mail sale igual: no puede tumbar el aviso.
 
 ## Cómo modela la plata
 

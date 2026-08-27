@@ -60,6 +60,17 @@ var CONFIG_SEMILLA = [
   ['INFLACION_MENSUAL_PCT', 2.5, '%',
    'Se aplica solo a las obligaciones marcadas Ajusta_Inflacion = SI, y crece con los meses de distancia.',
    'ESTIMADO'],
+  // --- Avisos -------------------------------------------------------------
+  ['MAIL_AVISOS', '', 'mails',
+   'A quién le llega el resumen de los domingos. Separar con coma para que le llegue también a Elian. Vacío = al dueño de la planilla.',
+   'DECLARADO'],
+  ['WHATSAPP_NUMERO', '', 'número',
+   'Número con código de país y sin espacios, por ejemplo +5491122334455. Vacío = el aviso va solo por mail.',
+   'DECLARADO'],
+  ['CALLMEBOT_APIKEY', '', 'clave',
+   'Clave de CallMeBot para mandar el aviso por WhatsApp. Se saca en 2 minutos desde el celular: mandarle "I allow callmebot to send me messages" al +34 644 51 95 23 y devuelve la clave.',
+   'DECLARADO'],
+
   ['VENTA_BRUTA_SEMANAL_BASE', 2800000, '$',
    'Facturación bruta semanal de referencia. Promedio real 01/05 al 26/08/2026: $2.793.668/semana ($46.694.168 en 117 días).',
    'MEDIDO']

@@ -120,6 +120,9 @@ var ESQUEMA = {
   ESTA_SEMANA: {
     nombre: 'Esta Semana',
     generada: true,
+    // Es la pantalla de inicio, no una tabla: arriba lleva el resumen y abajo
+    // la lista. Por eso no se le fuerza una fila de cabecera.
+    libre: true,
     descripcion: 'La pantalla del domingo. La escribe el sistema — no editar.',
     columnas: [
       { titulo: 'Vence', ancho: 110, formato: FECHA },

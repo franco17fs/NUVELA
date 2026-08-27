@@ -4,7 +4,7 @@
  * GENERADO: no editar acá. La fuente son los archivos de cashflow/apps-script/.
  * Para regenerarlo:  node cashflow/build/bundle.js
  *
- * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs
+ * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs, 08_Prioridad.gs, 09_EstaSemana.gs
  *
  * Instalación:
  *   1. En la planilla: Extensiones -> Apps Script
@@ -26,6 +26,9 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
     .addItem('Actualizar proyección', 'actualizarProyeccion')
+    .addSeparator()
+    .addItem('Activar aviso de los domingos', 'activarAvisoDominical')
+    .addItem('Mandarme el aviso ahora', 'avisoSemanal')
     .addSeparator()
     .addItem('Crear / reparar sistema', 'crearSistema')
     .addItem('Revisar carga', 'revisarCarga')
@@ -127,6 +130,17 @@ var CONFIG_SEMILLA = [
   ['INFLACION_MENSUAL_PCT', 2.5, '%',
    'Se aplica solo a las obligaciones marcadas Ajusta_Inflacion = SI, y crece con los meses de distancia.',
    'ESTIMADO'],
+  // --- Avisos -------------------------------------------------------------
+  ['MAIL_AVISOS', '', 'mails',
+   'A quién le llega el resumen de los domingos. Separar con coma para que le llegue también a Elian. Vacío = al dueño de la planilla.',
+   'DECLARADO'],
+  ['WHATSAPP_NUMERO', '', 'número',
+   'Número con código de país y sin espacios, por ejemplo +5491122334455. Vacío = el aviso va solo por mail.',
+   'DECLARADO'],
+  ['CALLMEBOT_APIKEY', '', 'clave',
+   'Clave de CallMeBot para mandar el aviso por WhatsApp. Se saca en 2 minutos desde el celular: mandarle "I allow callmebot to send me messages" al +34 644 51 95 23 y devuelve la clave.',
+   'DECLARADO'],
+
   ['VENTA_BRUTA_SEMANAL_BASE', 2800000, '$',
    'Facturación bruta semanal de referencia. Promedio real 01/05 al 26/08/2026: $2.793.668/semana ($46.694.168 en 117 días).',
    'MEDIDO']
@@ -269,6 +283,9 @@ var ESQUEMA = {
   ESTA_SEMANA: {
     nombre: 'Esta Semana',
     generada: true,
+    // Es la pantalla de inicio, no una tabla: arriba lleva el resumen y abajo
+    // la lista. Por eso no se le fuerza una fila de cabecera.
+    libre: true,
     descripcion: 'La pantalla del domingo. La escribe el sistema — no editar.',
     columnas: [
       { titulo: 'Vence', ancho: 110, formato: FECHA },
@@ -533,6 +550,7 @@ function crearSistema() {
 }
 
 function escribirCabecera(hoja, def) {
+  if (def.libre) return;   // arma su propio layout al generarse
   var titulos = def.columnas.map(function (c) { return c.titulo; });
   var rango = hoja.getRange(1, 1, 1, titulos.length);
   rango.setValues([titulos])
@@ -591,8 +609,8 @@ function marcarGeneradas(ss) {
     if (!def.generada) return;
     var hoja = ss.getSheetByName(def.nombre);
     if (hoja.getLastRow() > 1) return;
-    hoja.getRange(2, 1)
-        .setValue('Esta hoja la escribe el sistema. Se completa en la etapa siguiente.')
+    hoja.getRange(def.libre ? 1 : 2, 1)
+        .setValue('Esta hoja la escribe el sistema. Corré "Actualizar proyección" para llenarla.')
         .setFontColor('#8A8F9A')
         .setFontStyle('italic');
   });
@@ -924,9 +942,12 @@ function proyectar(entrada) {
   var saldo = saldoInicial;
 
   for (var i = 0; i < semanas.length; i++) {
-    var delSemana = vencimientos.filter(function (v) {
-      return v.semana === i && !(entrada.pagados || {})[v.id + '|' + i];
-    });
+    var pagados = entrada.pagados || {};
+    var todos = vencimientos.filter(function (v) { return v.semana === i; });
+    // Los ya pagados no se restan de nuevo, pero se guardan: "Esta Semana"
+    // tiene que mostrar la semana completa, incluido lo que ya se hizo.
+    var yaPagados = todos.filter(function (v) { return pagados[v.id + '|' + i]; });
+    var delSemana = todos.filter(function (v) { return !pagados[v.id + '|' + i]; });
 
     var egresos = { mercaderia: 0, impuestos: 0, deuda: 0, fijos: 0 };
     delSemana.forEach(function (v) {
@@ -949,7 +970,8 @@ function proyectar(entrada) {
       deuda: egresos.deuda,
       saldoFinal: Math.round(saldoFinal),
       estado: saldoFinal < 0 ? ESTADO.ROJO : (saldoFinal < colchon ? ESTADO.ATENCION : ESTADO.OK),
-      vencimientos: delSemana
+      vencimientos: delSemana,
+      yaPagados: yaPagados
     });
 
     saldo = saldoFinal;
@@ -994,6 +1016,10 @@ function resumenDeSemana(fila, cuantos) {
     .join(' · ');
 }
 
+function formatearFecha(d) {
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+
 function pesos(n) {
   var entero = Math.round(Math.abs(n)).toString();
   var partes = [];
@@ -1021,26 +1047,21 @@ var COLOR_ESTADO = {
   OK: { fondo: null, texto: null }
 };
 
-function actualizarProyeccion() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+/**
+ * Lee la planilla, proyecta y arma el plan de pago de la semana en curso.
+ * Lo usan tanto el menú como el aviso automático del domingo.
+ *
+ * Devuelve null si los datos no dan para proyectar; el motivo queda en `error`.
+ */
+function calcularTodo(ss) {
   var cfg = leerConfig(ss);
-  var hoy = new Date();
+  var obligaciones = filasDe(ss, ESQUEMA.OBLIGACIONES);
 
-  var problemas = validarObligaciones(filasDe(ss, ESQUEMA.OBLIGACIONES));
-  if (problemas.length) {
-    SpreadsheetApp.getUi().alert(
-      'No proyecto con datos rotos',
-      'Arreglá esto primero:\n\n' + problemas.join('\n\n'),
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
-    return;
-  }
+  var problemas = validarObligaciones(obligaciones);
+  if (problemas.length) return { error: 'Arreglá esto primero:\n\n' + problemas.join('\n\n') };
 
   var ventas = filasDe(ss, ESQUEMA.VENTAS).filter(function (f) { return esFecha(f[COL_VENTAS.DESDE]); });
-  if (!ventas.length) {
-    SpreadsheetApp.getUi().alert('Falta cargar la hoja Ventas.');
-    return;
-  }
+  if (!ventas.length) return { error: 'Falta cargar la hoja Ventas.' };
 
   var semanas = ventas.map(function (f, i) {
     return { numero: i + 1, desde: f[COL_VENTAS.DESDE], hasta: f[COL_VENTAS.HASTA] };
@@ -1054,16 +1075,37 @@ function actualizarProyeccion() {
   var resultado = proyectar({
     semanas: semanas,
     brutoPorSemana: brutoPorSemana,
-    obligaciones: filasDe(ss, ESQUEMA.OBLIGACIONES),
+    obligaciones: obligaciones,
     cfg: cfg,
-    hoy: hoy,
+    hoy: new Date(),
     pagados: pagosPorSemana(filasDe(ss, ESQUEMA.MOVIMIENTOS), semanas)
   });
 
-  escribirNetoEstimado(ss, brutoPorSemana, Number(cfg.PCT_NETO_SOBRE_BRUTO) || 0);
-  escribirCashflow(ss, resultado, hoy);
+  // La plata con la que se cuenta esta semana: lo que hay más lo que entra.
+  var semana1 = resultado.filas[0];
+  resultado.plan = planDePago(semana1.vencimientos, semana1.saldoInicial + semana1.ingresos);
+  resultado.cfg = cfg;
+  resultado.brutoPorSemana = brutoPorSemana;
+  resultado.deudas = filasDe(ss, ESQUEMA.DEUDAS);
+  return resultado;
+}
 
-  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensajeResumen(resultado, cfg),
+function actualizarProyeccion() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var resultado = calcularTodo(ss);
+
+  if (resultado.error) {
+    SpreadsheetApp.getUi().alert('No proyecto con datos rotos', resultado.error,
+                                 SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  escribirNetoEstimado(ss, resultado.brutoPorSemana, Number(resultado.cfg.PCT_NETO_SOBRE_BRUTO) || 0);
+  escribirCashflow(ss, resultado, new Date());
+  escribirEstaSemana(ss, resultado, resultado.plan, resultado.deudas);
+
+  ss.setActiveSheet(ss.getSheetByName(ESQUEMA.ESTA_SEMANA.nombre));
+  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensajeResumen(resultado, resultado.cfg),
                                SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
@@ -1147,7 +1189,14 @@ function detalleDe(fila, quiebre, hoy) {
 function mensajeResumen(resultado, cfg) {
   var quiebre = resultado.quiebre;
   var ultima = resultado.filas[resultado.filas.length - 1];
+  var plan = resultado.plan;
   var lineas = ['Proyección actualizada: ' + resultado.filas.length + ' semanas.', ''];
+
+  lineas.push(plan.alcanza
+    ? 'Esta semana alcanza: te sobran ' + pesos(plan.sobrante) + '.'
+    : 'ESTA SEMANA TE FALTAN ' + pesos(plan.deficit) + ' — quedan ' + plan.sinPagar.length +
+      ' vencimientos sin pagar. Mirá "Esta Semana".');
+  lineas.push('');
 
   if (quiebre) {
     lineas.push('QUIEBRE en la semana ' + quiebre.semana +
@@ -1165,6 +1214,373 @@ function mensajeResumen(resultado, cfg) {
   return lineas.join('\n');
 }
 
-function formatearFecha(d) {
-  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2);
+// ========================================================================
+// 08_Prioridad.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Motor de priorización.
+ *
+ * Cuando la plata no alcanza para todos los vencimientos de la semana, esto
+ * ordena y parte la lista en dos: lo que entra y lo que queda afuera.
+ *
+ * No decide nada. Ordena según el criterio cargado en la planilla y muestra el
+ * trade-off con la consecuencia escrita al lado. La decisión es de Franco.
+ *
+ * Funciones puras: no tocan el Sheet.
+ */
+
+var ESTADO_PAGO = { PAGADO: 'PAGADO', ALCANZA: 'ALCANZA', NO_ALCANZA: 'NO ALCANZA' };
+
+/**
+ * Orden en que se pagan los vencimientos de una semana:
+ *
+ *   1. Criticidad, de mayor a menor. Es el criterio principal y está cargado a
+ *      mano en Obligaciones, así que se cambia editando la planilla y no el código.
+ *   2. A igual criticidad, lo que vence antes.
+ *   3. A igual fecha, lo más barato primero: con plata limitada, pagar los chicos
+ *      deja menos acreedores golpeados que pagar uno grande.
+ *
+ * El tercer criterio es una heurística, no una ley. Está acá a la vista para
+ * que se pueda discutir, y se sobreescribe subiendo la criticidad de una fila.
+ */
+function ordenarPorPrioridad(vencimientos) {
+  return vencimientos.slice().sort(function (a, b) {
+    if (b.criticidad !== a.criticidad) return b.criticidad - a.criticidad;
+    if (a.fecha - b.fecha !== 0) return a.fecha - b.fecha;
+    return a.monto - b.monto;
+  });
+}
+
+/**
+ * Reparte la plata disponible entre los vencimientos, en orden de prioridad.
+ *
+ * Si un vencimiento no entra, se sigue con los que siguen: uno grande que no
+ * entra no tiene por qué bloquear a tres chicos que sí. Eso deja más
+ * obligaciones cubiertas, que es lo que importa cuando falta plata.
+ */
+function planDePago(vencimientos, disponible) {
+  var orden = ordenarPorPrioridad(vencimientos);
+  var restante = disponible;
+  var pagados = [];
+  var sinPagar = [];
+
+  orden.forEach(function (v) {
+    if (v.monto <= restante) {
+      restante -= v.monto;
+      pagados.push(v);
+    } else {
+      sinPagar.push(v);
+    }
+  });
+
+  var comprometido = orden.reduce(function (a, v) { return a + v.monto; }, 0);
+  var faltante = sinPagar.reduce(function (a, v) { return a + v.monto; }, 0);
+
+  return {
+    orden: orden,
+    pagados: pagados,
+    sinPagar: sinPagar,
+    disponible: disponible,
+    comprometido: comprometido,
+
+    // Dos números distintos, y confundirlos lleva a decisiones equivocadas:
+    //
+    //   deficit  — cuánta plata hay que conseguir para pagar TODO.
+    //   faltante — cuánto suma lo que queda entero sin pagar.
+    //
+    // Son distintos porque un vencimiento entra o no entra: si faltan $47.000
+    // para una compra de $1.293.600, el déficit es $47.000 pero lo que queda
+    // afuera es la compra completa. El déficit es el número para salir a
+    // buscar plata; el faltante es lo que se deja de hacer si no aparece.
+    deficit: Math.max(0, comprometido - disponible),
+    faltante: faltante,
+
+    sobrante: Math.max(0, restante),
+    alcanza: sinPagar.length === 0
+  };
+}
+
+/**
+ * Lo que se pierde por no pagar: las consecuencias de lo que quedó afuera,
+ * de lo más crítico a lo menos. Es el texto que Franco cargó, sin reescribir.
+ */
+function consecuenciasDe(plan) {
+  return plan.sinPagar.map(function (v) {
+    return { concepto: v.concepto, acreedor: v.acreedor, monto: v.monto,
+             criticidad: v.criticidad, consecuencia: v.consecuencia };
+  });
+}
+
+/** Estado de un vencimiento no pagado: entra o no entra con la plata que hay. */
+function estadoDe(v, plan) {
+  return plan.sinPagar.indexOf(v) === -1 ? ESTADO_PAGO.ALCANZA : ESTADO_PAGO.NO_ALCANZA;
+}
+
+/**
+ * Las tres respuestas de la pantalla de inicio:
+ * qué hay que pagar, cuánta plata va a haber, y si falta, cuánto.
+ */
+function resumenSemanal(fila, plan) {
+  return {
+    desde: fila.desde,
+    hasta: fila.hasta,
+    tenesHoy: fila.saldoInicial,
+    vaAEntrar: fila.ingresos,
+    tenesQuePagar: plan.comprometido,
+    disponible: plan.disponible,
+    deficit: plan.deficit,
+    falta: plan.alcanza ? 0 : plan.faltante,
+    alcanza: plan.alcanza,
+    cuantos: plan.orden.length,
+    sinPagar: plan.sinPagar.length
+  };
+}
+
+/**
+ * Cuánto flujo mensual se libera cuando termina cada deuda.
+ * Contesta "¿cuándo dejo de estar ahogado?" sin tener que hacer la cuenta.
+ */
+function liberacionDeFlujo(deudas) {
+  return deudas
+    .filter(function (d) { return String(d[COL_DEU.ACTIVO]).toUpperCase() === 'SI'; })
+    .map(function (d) {
+      var cuotas = Number(d[COL_DEU.CUOTAS]) || 0;
+      return {
+        acreedor: d[COL_DEU.ACREEDOR],
+        concepto: d[COL_DEU.CONCEPTO],
+        saldo: Number(d[COL_DEU.SALDO]) || 0,
+        cuota: Number(d[COL_DEU.CUOTA]) || 0,
+        cuotas: cuotas,
+        libera: cuotas > 0 ? Number(d[COL_DEU.CUOTA]) || 0 : 0
+      };
+    })
+    .sort(function (a, b) { return a.cuotas - b.cuotas; });
+}
+
+var COL_DEU = {
+  ID: 0, ACTIVO: 1, ACREEDOR: 2, CONCEPTO: 3, ORIGINAL: 4, SALDO: 5,
+  CUOTA: 6, CUOTAS: 7, PROXIMO: 8, INTERES: 9, FORMA: 10, CRITICIDAD: 11, NOTAS: 12
+};
+
+// ========================================================================
+// 09_EstaSemana.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Pantalla "Esta Semana" y avisos.
+ *
+ * Contesta tres cosas y nada más:
+ *   1. Qué hay que pagar en los próximos 7 días
+ *   2. Cuánta plata va a haber
+ *   3. Si falta, cuánto falta y qué queda sin pagar
+ */
+
+var COLOR_PAGO = {
+  PAGADO: { fondo: '#EDF7ED', texto: '#2C6B2F' },
+  ALCANZA: { fondo: null, texto: null },
+  'NO ALCANZA': { fondo: '#FBE3E3', texto: '#A02020' }
+};
+
+function escribirEstaSemana(ss, resultado, plan, deudas) {
+  var hoja = ss.getSheetByName(ESQUEMA.ESTA_SEMANA.nombre);
+  var def = ESQUEMA.ESTA_SEMANA;
+  var fila = resultado.filas[0];
+  var resumen = resumenSemanal(fila, plan);
+  var quiebre = resultado.quiebre;
+
+  hoja.clear();
+  hoja.clearFormats();
+
+  var f = 1;
+
+  hoja.getRange(f, 1).setValue('ESTA SEMANA')
+      .setFontSize(20).setFontWeight('bold').setFontColor(COLOR.cabeceraEntrada);
+  hoja.getRange(f++, 4).setValue(formatearFecha(resumen.desde) + ' al ' + formatearFecha(resumen.hasta))
+      .setFontSize(12).setFontColor('#6B7280');
+  f++;
+
+  // --- Las tres respuestas --------------------------------------------------
+  [['Tenés hoy', resumen.tenesHoy],
+   ['Va a entrar esta semana', resumen.vaAEntrar],
+   ['Tenés que pagar', -resumen.tenesQuePagar]].forEach(function (par) {
+    hoja.getRange(f, 1).setValue(par[0]).setFontColor('#6B7280');
+    hoja.getRange(f++, 2).setValue(pesos(par[1])).setFontSize(13).setFontWeight('bold');
+  });
+
+  var veredicto = resumen.alcanza
+    ? 'ALCANZA — te sobran ' + pesos(plan.sobrante)
+    : 'TE FALTAN ' + pesos(plan.deficit) + ' — queda sin pagar ' + pesos(plan.faltante);
+  hoja.getRange(f, 1, 1, 3).merge().setValue(veredicto)
+      .setFontSize(15).setFontWeight('bold')
+      .setBackground(resumen.alcanza ? '#EDF7ED' : '#FBE3E3')
+      .setFontColor(resumen.alcanza ? '#2C6B2F' : '#A02020')
+      .setHorizontalAlignment('center');
+  f += 2;
+
+  if (quiebre) {
+    hoja.getRange(f++, 1, 1, 5).merge()
+        .setValue(quiebre.semana === 1
+          ? 'El quiebre es esta semana.'
+          : 'Ojo: la semana ' + quiebre.semana + ' (' + formatearFecha(quiebre.desde) +
+            ') cierra en ' + pesos(-quiebre.faltan) + '. Tenés ' + quiebre.dias + ' días para resolverlo.')
+        .setFontWeight('bold').setFontColor('#8A6100');
+    f++;
+  }
+
+  // --- Lista de vencimientos ------------------------------------------------
+  hoja.getRange(f, 1).setValue(resumen.alcanza
+    ? 'Vencimientos de la semana'
+    : 'En este orden, hasta donde alcance').setFontWeight('bold');
+  f++;
+
+  var titulos = def.columnas.map(function (c) { return c.titulo; });
+  hoja.getRange(f, 1, 1, titulos.length).setValues([titulos])
+      .setFontWeight('bold').setFontColor(COLOR.textoCabecera)
+      .setBackground(COLOR.cabeceraEntrada).setWrap(true);
+  var filaCabecera = f++;
+
+  // Lo ya pagado va primero y en verde: la semana se lee completa.
+  var listado = fila.yaPagados.map(function (v) { return { v: v, estado: ESTADO_PAGO.PAGADO }; })
+    .concat(plan.orden.map(function (v) { return { v: v, estado: estadoDe(v, plan) }; }));
+
+  if (!listado.length) {
+    hoja.getRange(f, 1).setValue('No vence nada esta semana.').setFontStyle('italic');
+  } else {
+    var filas = listado.map(function (x) {
+      return [x.v.fecha, x.v.concepto, x.v.acreedor, x.v.monto, x.v.criticidad,
+              x.estado, x.v.consecuencia];
+    });
+    hoja.getRange(f, 1, filas.length, titulos.length).setValues(filas);
+
+    listado.forEach(function (x, i) {
+      var color = COLOR_PAGO[x.estado];
+      hoja.getRange(f + i, 1, 1, titulos.length)
+          .setBackground(color.fondo).setFontColor(color.texto);
+    });
+
+    hoja.getRange(f, 1, filas.length, 1).setNumberFormat(FECHA);
+    hoja.getRange(f, 4, filas.length, 1).setNumberFormat(MONEDA);
+    hoja.getRange(f, 7, filas.length, 1).setWrap(true);
+    f += filas.length;
+  }
+
+  f += 2;
+  escribirDeudas(hoja, f, deudas);
+
+  def.columnas.forEach(function (c, i) { hoja.setColumnWidth(i + 1, c.ancho); });
+  hoja.setFrozenRows(filaCabecera);
+}
+
+/** Saldo vivo y cuánto flujo mensual libera cada deuda al terminar. */
+function escribirDeudas(hoja, f, deudas) {
+  var lista = liberacionDeFlujo(deudas);
+  if (!lista.length) return;
+
+  hoja.getRange(f, 1).setValue('Deuda viva').setFontWeight('bold');
+  f++;
+
+  var titulos = ['Acreedor', 'Saldo', 'Cuota', 'Cuotas', 'Libera al terminar'];
+  hoja.getRange(f, 1, 1, titulos.length).setValues([titulos])
+      .setFontWeight('bold').setFontColor(COLOR.textoCabecera).setBackground(COLOR.cabeceraGenerada);
+  f++;
+
+  var filas = lista.map(function (d) {
+    return [d.acreedor, d.saldo, d.cuota, d.cuotas,
+            d.libera ? pesos(d.libera) + '/mes en ' + d.cuotas + ' cuotas' : ''];
+  });
+  hoja.getRange(f, 1, filas.length, titulos.length).setValues(filas);
+  hoja.getRange(f, 2, filas.length, 2).setNumberFormat(MONEDA);
+}
+
+// --- Avisos -----------------------------------------------------------------
+
+/** Texto del aviso. Puro: se testea sin mandar nada. */
+function textoDelAviso(resumen, plan, quiebre) {
+  var l = ['NUVELA · Semana del ' + formatearFecha(resumen.desde) + ' al ' + formatearFecha(resumen.hasta), ''];
+
+  l.push('Tenés hoy: ' + pesos(resumen.tenesHoy));
+  l.push('Va a entrar: ' + pesos(resumen.vaAEntrar));
+  l.push('Tenés que pagar: ' + pesos(resumen.tenesQuePagar) + ' en ' + resumen.cuantos + ' vencimientos');
+  l.push('');
+
+  if (resumen.alcanza) {
+    l.push('ALCANZA. Te sobran ' + pesos(plan.sobrante) + '.');
+  } else {
+    l.push('TE FALTAN ' + pesos(plan.deficit) + ' para pagar todo.');
+    l.push('');
+    l.push('Con lo que hay entra todo menos:');
+    consecuenciasDe(plan).forEach(function (c) {
+      l.push('· ' + c.concepto + ' ' + pesos(c.monto) + ' (' + c.acreedor + ')');
+      l.push('  ' + c.consecuencia);
+    });
+  }
+
+  if (quiebre && quiebre.semana > 1) {
+    l.push('');
+    l.push('Primer quiebre: semana ' + quiebre.semana + ' (' + formatearFecha(quiebre.desde) +
+           '), faltan ' + pesos(quiebre.faltan) + '. Tenés ' + quiebre.dias + ' días.');
+  }
+
+  return l.join('\n');
+}
+
+/**
+ * Manda el aviso semanal. Mail siempre; WhatsApp solo si están cargadas las
+ * credenciales de CallMeBot en Config.
+ */
+function enviarAviso(texto, cfg) {
+  var destinatarios = String(cfg.MAIL_AVISOS || '').trim() || Session.getActiveUser().getEmail();
+  MailApp.sendEmail(destinatarios, 'NUVELA · Qué pagar esta semana', texto);
+
+  var numero = String(cfg.WHATSAPP_NUMERO || '').trim();
+  var apikey = String(cfg.CALLMEBOT_APIKEY || '').trim();
+  if (!numero || !apikey) return false;
+
+  var url = 'https://api.callmebot.com/whatsapp.php?phone=' + encodeURIComponent(numero) +
+            '&apikey=' + encodeURIComponent(apikey) +
+            '&text=' + encodeURIComponent(texto);
+  try {
+    UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    return true;
+  } catch (e) {
+    // El mail ya salió: que falle WhatsApp no puede tumbar el aviso.
+    console.error('WhatsApp falló: ' + e);
+    return false;
+  }
+}
+
+/** Corre la proyección y manda el aviso. Es lo que dispara el trigger dominical. */
+function avisoSemanal() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var resultado = calcularTodo(ss);
+
+  if (resultado.error) {
+    MailApp.sendEmail(String(leerConfig(ss).MAIL_AVISOS || '').trim() || Session.getActiveUser().getEmail(),
+                      'NUVELA · No pude calcular la semana',
+                      'La proyección no corrió:\n\n' + resultado.error);
+    return;
+  }
+
+  escribirCashflow(ss, resultado, new Date());
+  escribirEstaSemana(ss, resultado, resultado.plan, resultado.deudas);
+  enviarAviso(textoDelAviso(resumenSemanal(resultado.filas[0], resultado.plan),
+                            resultado.plan, resultado.quiebre), resultado.cfg);
+}
+
+/** Programa el aviso para todos los domingos a la noche. */
+function activarAvisoDominical() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'avisoSemanal') ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger('avisoSemanal')
+    .timeBased().onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(20).create();
+
+  SpreadsheetApp.getUi().alert(
+    'Aviso activado',
+    'Todos los domingos a las 20 hs te llega el resumen por mail.\n\n' +
+    'Para que llegue también por WhatsApp, cargá WHATSAPP_NUMERO y CALLMEBOT_APIKEY en Config.',
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
 }
