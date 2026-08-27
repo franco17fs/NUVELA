@@ -12,6 +12,7 @@ function onOpen() {
     .addItem('Mandarme el aviso ahora', 'avisoSemanal')
     .addSeparator()
     .addItem('Crear / reparar sistema', 'crearSistema')
+    .addItem('Recargar definición del modelo', 'recargarSemilla')
     .addItem('Revisar carga', 'revisarCarga')
     .addToUi();
 }

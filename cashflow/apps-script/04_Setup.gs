@@ -42,16 +42,23 @@ function crearSistema() {
     Number(cfg.PCT_NETO_SOBRE_BRUTO) || 67.3
   ));
 
+  var agregadas = completarConfig(ss);
   marcarGeneradas(ss);
   borrarHojaPorDefecto(ss);
 
-  SpreadsheetApp.getUi().alert(
-    'NUVELA · Cashflow',
-    creadas.length
-      ? 'Listo. Hojas creadas: ' + creadas.join(', ') + '.\n\nEmpezá por Config: cargá el saldo real de Mercado Pago y revisá lo marcado CONFIRMAR.'
-      : 'Estructura y formatos actualizados. No se tocó ningún dato cargado.',
-    SpreadsheetApp.getUi().ButtonSet.OK
-  );
+  var mensaje = creadas.length
+    ? 'Listo. Hojas creadas: ' + creadas.join(', ') +
+      '.\n\nEmpezá por Config: cargá el saldo real de Mercado Pago y revisá lo marcado CONFIRMAR.'
+    : 'Estructura y formatos actualizados. No se tocó ningún dato cargado.';
+
+  if (agregadas.length) {
+    mensaje += '\n\nParámetros nuevos agregados a Config: ' + agregadas.join(', ') + '.';
+  }
+  if (versionDesactualizada(ss)) {
+    mensaje += '\n\n' + textoDesactualizado(ss);
+  }
+
+  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensaje, SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
 function escribirCabecera(hoja, def) {
@@ -107,6 +114,66 @@ function sembrarSiVacio(ss, def, filas) {
   return true;
 }
 
+/**
+ * Agrega a Config las claves nuevas que no estén, sin tocar los valores ya
+ * cargados. Así una versión nueva no obliga a recargar todo solo porque
+ * apareció un parámetro.
+ */
+function completarConfig(ss) {
+  var hoja = ss.getSheetByName(ESQUEMA.CONFIG.nombre);
+  if (hoja.getLastRow() < 2) return [];
+
+  var existentes = {};
+  hoja.getRange(2, 1, hoja.getLastRow() - 1, 1).getValues()
+      .forEach(function (f) { if (f[0]) existentes[String(f[0]).trim()] = true; });
+
+  var faltantes = CONFIG_SEMILLA.filter(function (f) { return !existentes[f[0]]; });
+  if (faltantes.length) {
+    hoja.getRange(hoja.getLastRow() + 1, 1, faltantes.length, ESQUEMA.CONFIG.columnas.length)
+        .setValues(faltantes);
+  }
+  return faltantes.map(function (f) { return f[0]; });
+}
+
+/**
+ * Vuelve a cargar la definición del modelo: Config, Obligaciones y Deudas.
+ *
+ * Es destructivo a propósito y por eso pide confirmación. No toca Ventas ni
+ * Movimientos, que son datos de operación y no del modelo.
+ */
+function recargarSemilla() {
+  var ui = SpreadsheetApp.getUi();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  var respuesta = ui.alert(
+    'Recargar la definición del modelo',
+    'Esto REEMPLAZA por completo:\n' +
+    '  · Config (incluidos los saldos y los mails que hayas cargado)\n' +
+    '  · Obligaciones (perdés los montos y textos que hayas editado)\n' +
+    '  · Deudas\n\n' +
+    'NO toca Ventas ni Movimientos.\n\n' +
+    'Anotá antes tu saldo de Mercado Pago: vas a tener que volver a cargarlo.\n\n' +
+    '¿Recargo?',
+    ui.ButtonSet.YES_NO
+  );
+  if (respuesta !== ui.Button.YES) return;
+
+  [[ESQUEMA.CONFIG, CONFIG_SEMILLA],
+   [ESQUEMA.OBLIGACIONES, OBLIGACIONES_SEMILLA],
+   [ESQUEMA.DEUDAS, DEUDAS_SEMILLA]].forEach(function (par) {
+    var hoja = ss.getSheetByName(par[0].nombre);
+    if (hoja.getLastRow() > 1) {
+      hoja.getRange(2, 1, hoja.getLastRow() - 1, par[0].columnas.length).clearContent();
+    }
+    hoja.getRange(2, 1, par[1].length, par[0].columnas.length).setValues(par[1]);
+  });
+
+  ui.alert('Listo',
+    'Modelo recargado a la versión ' + MODELO_VERSION + '.\n\n' +
+    'Cargá de nuevo tu saldo en Config y corré "Actualizar proyección".',
+    ui.ButtonSet.OK);
+}
+
 /** Aviso fijo arriba de las hojas que escribe el sistema. */
 function marcarGeneradas(ss) {
   ORDEN_HOJAS.forEach(function (clave) {
@@ -119,6 +186,20 @@ function marcarGeneradas(ss) {
         .setFontColor('#8A8F9A')
         .setFontStyle('italic');
   });
+}
+
+/** La planilla quedó con una semilla anterior a la del código. */
+function versionDesactualizada(ss) {
+  return Number(leerConfig(ss).MODELO_VERSION || 0) !== MODELO_VERSION;
+}
+
+function textoDesactualizado(ss) {
+  var enHoja = Number(leerConfig(ss).MODELO_VERSION || 0);
+  return 'ATENCIÓN: la planilla tiene la versión ' + (enHoja || 'inicial') +
+         ' del modelo y el código es la ' + MODELO_VERSION + '.\n' +
+         'Los datos de Obligaciones y Config quedaron viejos, así que la proyección ' +
+         'sale con números que ya no valen.\n' +
+         'Corré "Recargar definición del modelo" en el menú.';
 }
 
 function borrarHojaPorDefecto(ss) {

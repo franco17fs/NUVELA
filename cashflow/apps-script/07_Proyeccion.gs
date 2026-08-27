@@ -56,6 +56,15 @@ function calcularTodo(ss) {
 
 function actualizarProyeccion() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // Antes que nada: si los datos quedaron viejos, proyectar da un número que
+  // parece bueno y no lo es. Eso es peor que no proyectar.
+  if (versionDesactualizada(ss)) {
+    SpreadsheetApp.getUi().alert('Datos desactualizados', textoDesactualizado(ss),
+                                 SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
   var resultado = calcularTodo(ss);
 
   if (resultado.error) {

@@ -8,7 +8,22 @@
  *   CONFIRMAR · hay que verificarlo antes de tomar una decisión de plata con esto
  */
 
+/**
+ * Versión del modelo. Se sube cada vez que cambia la semilla de Config,
+ * Obligaciones o Deudas.
+ *
+ * `crearSistema` no pisa datos ya cargados —y está bien que no lo haga—, pero
+ * eso significa que una corrección de la semilla no llega sola a una planilla
+ * que ya existe. Comparar esta versión contra la de la hoja es lo que hace que
+ * el desfasaje se avise en vez de pasar desapercibido.
+ */
+var MODELO_VERSION = 3;
+
 var CONFIG_SEMILLA = [
+  ['MODELO_VERSION', MODELO_VERSION, 'versión',
+   'Versión de la semilla cargada en esta planilla. Si no coincide con la del código, la proyección avisa: los datos quedaron viejos y hay que recargarlos desde el menú.',
+   'MEDIDO'],
+
   // --- Saldos de arranque -------------------------------------------------
   ['SALDO_MERCADO_PAGO', 0, '$', 'Plata disponible hoy en Mercado Pago.', 'DECLARADO'],
   ['SALDO_EFECTIVO', 0, '$', 'Efectivo en el depósito.', 'DECLARADO'],

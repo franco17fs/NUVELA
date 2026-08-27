@@ -230,6 +230,22 @@ test('la semilla de deudas respeta el esquema y deja trazado el vínculo', () =>
   assert.match(auto[10], /RETIRO/, 'DEU-003 tiene que aclarar que se paga del retiro');
 });
 
+test('la semilla declara su versión y coincide con la del código', () => {
+  // Franco corrió la Etapa 3 sobre datos de la Etapa 1 y obtuvo números que
+  // parecían buenos y no lo eran. La versión es lo que hace visible ese desfasaje.
+  assert.strictEqual(cfg.MODELO_VERSION, G.MODELO_VERSION);
+  assert.ok(G.MODELO_VERSION >= 3, 'la versión tiene que subir cuando cambia la semilla');
+});
+
+test('cambiar la semilla sin subir la versión es un error a la vista', () => {
+  // Este test no puede detectar el olvido solo, pero deja la regla escrita
+  // donde se lee: si cambian estos valores, sube MODELO_VERSION.
+  const moto = G.OBLIGACIONES_SEMILLA.find((f) => f[G.COL_OBL.ID] === 'OBL-003');
+  assert.strictEqual(moto[G.COL_OBL.TIPO_MONTO], 'PCT_VENTAS');
+  assert.strictEqual(moto[G.COL_OBL.MONTO], 4.3);
+  assert.strictEqual(moto[G.COL_OBL.AJUSTA], 'NO');
+});
+
 test('las hojas generadas están declaradas como tales', () => {
   for (const clave of ['ESTA_SEMANA', 'CASHFLOW', 'SIMULADOR']) {
     assert.strictEqual(G.ESQUEMA[clave].generada, true, `${clave} debería ser de solo lectura`);
