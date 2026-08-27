@@ -4,7 +4,7 @@
  * GENERADO: no editar acá. La fuente son los archivos de cashflow/apps-script/.
  * Para regenerarlo:  node cashflow/build/bundle.js
  *
- * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs
+ * Incluye: 00_Menu.gs, 01_Config.gs, 02_Esquema.gs, 03_Semilla.gs, 04_Setup.gs, 05_Validacion.gs, 06_Motor.gs, 07_Proyeccion.gs
  *
  * Instalación:
  *   1. En la planilla: Extensiones -> Apps Script
@@ -25,8 +25,9 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
-    .addItem('Crear / reparar sistema', 'crearSistema')
+    .addItem('Actualizar proyección', 'actualizarProyeccion')
     .addSeparator()
+    .addItem('Crear / reparar sistema', 'crearSistema')
     .addItem('Revisar carga', 'revisarCarga')
     .addToUi();
 }
@@ -92,9 +93,9 @@ var CONFIG_SEMILLA = [
   ['PCT_COSTO_MERCADERIA', 46.2, '%',
    'Costo de la mercadería sobre facturación bruta. Junio 2026: $5.073.318 sobre $10.980.981.',
    'MEDIDO'],
-  ['PCT_MOTOMENSAJERIA', 5.9, '%',
-   'Motomensajería (Elimonca) sobre facturación bruta. Junio $650.500. Referencia por si conviene proyectarla como % en vez de monto semanal fijo.',
-   'MEDIDO'],
+  ['PCT_MOTOMENSAJERIA', 4.3, '%',
+   'Motomensajería (Elimonca) sobre facturación bruta. Se paga por envío, así que sube y baja con las ventas. 4,3% son ~$120.000 sobre la venta semanal de referencia, el nivel declarado hoy. Junio corrió al 5,9% ($650.500/mes).',
+   'DECLARADO'],
 
   // --- Impuestos ----------------------------------------------------------
   ['ALICUOTA_IVA', 21, '%',
@@ -379,13 +380,13 @@ var OBLIGACIONES_SEMILLA = [
    'NO es el total facturado (~$4.400.000/mes). ML descuenta casi todo de las liquidaciones diarias; esto es el "Total adeudado" que queda a pagar. Histórico: $400.000–$700.000. Se lee en vendedores.mercadolibre.com.ar/billing/resume. YA INCLUYE ADS: no cargar publicidad aparte.'],
 
   ['OBL-003', 'SI', 'Motomensajería (Flex)', 'Elimonca', 'LOGISTICA', 5,
-   'ESTIMADO', 250000, 'SEMANAL', 'LUN', 'SI',
+   'PCT_VENTAS', 4.3, 'SEMANAL', 'LUN', 'NO',
    'Sin moto no hay entrega. Sin entrega Mercado Libre no libera la plata de esas ventas: cortar la moto corta el ingreso con una semana de retraso.',
    'EFECTIVO',
-   'Declarado $200.000–$300.000/semana. Real de junio: $650.500/mes (~$150.000/semana); mayo $954.700 (~$220.000/semana). Alternativa: Tipo_Monto = PCT_VENTAS con 5,9.'],
+   'Va como % porque se paga por envío: cuando la semana vende más, la moto cuesta más. 4,3% da ~$120.000 sobre la venta semanal de referencia, que es el nivel declarado hoy. Histórico más alto: junio 5,9% ($650.500/mes), mayo $954.700. Si la semana se dispara, revisar el %.'],
 
   ['OBL-004', 'SI', 'Compra de mercadería', 'Proveedores varios', 'MERCADERIA', 4,
-   'PCT_VENTAS', 46.2, 'SEMANAL', 'LUN', 'SI',
+   'PCT_VENTAS', 46.2, 'SEMANAL', 'LUN', 'NO',
    'Sin reposición caen las ventas en 2 o 3 semanas. Es la única obligación cuyo timing elegís vos: todos los proveedores son de contado.',
    'MERCADO_PAGO',
    '46,2% de la facturación bruta (junio 2026: $5.073.318 sobre $10.980.981). Es la palanca principal del simulador: correr una compra una semana es la forma más rápida de destrabar una semana en rojo.'],
@@ -701,4 +702,469 @@ function validarVencimiento(etiqueta, periodicidad, valor) {
 /** `instanceof Date` falla entre contextos; esto no. */
 function esFecha(v) {
   return Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime());
+}
+
+// ========================================================================
+// 06_Motor.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Motor de proyección.
+ *
+ * Funciones puras: no tocan el Sheet. Reciben datos, devuelven datos.
+ * Todo lo que sea leer o escribir celdas vive en 07_Proyeccion.gs.
+ *
+ * La proyección es un arrastre semanal simple:
+ *   saldo_final = saldo_inicial + ingresos - egresos
+ *   saldo_inicial de la semana siguiente = saldo_final de esta
+ *
+ * Lo que no es simple, y por eso está acá, es cómo se arma cada término.
+ */
+
+var COL_VENTAS = { NUMERO: 0, DESDE: 1, HASTA: 2, PROYECTADO: 3, REAL: 4, NETO: 5, NOTAS: 6 };
+var COL_MOV = { FECHA: 0, TIPO: 1, CONCEPTO: 2, OBLIGACION: 3, MONTO: 4, CUENTA: 5, NOTAS: 6 };
+
+/** Categorías que se muestran en su propia columna del cashflow. */
+var COLUMNA_POR_CATEGORIA = {
+  MERCADERIA: 'mercaderia',
+  IMPUESTOS: 'impuestos',
+  DEUDA_FAMILIAR: 'deuda',
+  DEUDA_FINANCIERA: 'deuda'
+};
+
+var ESTADO = { OK: 'OK', ATENCION: 'ATENCION', ROJO: 'ROJO' };
+
+var MS_DIA = 86400000;
+
+// --- Fechas -----------------------------------------------------------------
+
+function mismaFecha(a, b) {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
+function enRango(fecha, desde, hasta) {
+  return fecha >= desde && fecha <= hasta;
+}
+
+/** Meses fraccionarios entre dos fechas. Negativo si `fecha` es anterior. */
+function mesesEntre(base, fecha) {
+  return ((fecha - base) / MS_DIA) / 30.44;
+}
+
+/**
+ * Cuánto crece un monto por inflación de acá a `fecha`.
+ * Nunca achica: una obligación de esta semana vale lo que vale hoy.
+ */
+function factorInflacion(base, fecha, pctMensual) {
+  var meses = mesesEntre(base, fecha);
+  if (!(pctMensual > 0) || meses <= 0) return 1;
+  return Math.pow(1 + pctMensual / 100, meses);
+}
+
+// --- Expansión de obligaciones ----------------------------------------------
+
+/**
+ * Convierte una obligación (una fila) en las fechas concretas en que vence
+ * dentro del rango. Es el paso que traduce "todos los lunes" a fechas reales.
+ */
+function ocurrenciasDeObligacion(obl, desde, hasta) {
+  var periodicidad = obl[COL_OBL.PERIODICIDAD];
+  var vencimiento = obl[COL_OBL.VENCIMIENTO];
+  var fechas = [];
+
+  if (periodicidad === 'SEMANAL') {
+    var objetivo = DIAS_SEMANA.indexOf(String(vencimiento).toUpperCase().trim());
+    if (objetivo === -1) return [];
+    // DIAS_SEMANA arranca en lunes; getDay() arranca en domingo.
+    var dow = (objetivo + 1) % 7;
+    for (var d = new Date(desde.getTime()); d <= hasta; d = sumarDias(d, 1)) {
+      if (d.getDay() === dow) fechas.push(new Date(d.getTime()));
+    }
+    return fechas;
+  }
+
+  if (periodicidad === 'MENSUAL' || periodicidad === 'BIMESTRAL') {
+    var dia = Number(vencimiento);
+    if (!(dia >= 1 && dia <= 28)) return [];
+    var paso = periodicidad === 'BIMESTRAL' ? 2 : 1;
+    // Se arranca un mes antes por si el rango empieza pasado el día de vencimiento.
+    var cursor = new Date(desde.getFullYear(), desde.getMonth() - paso, dia);
+    while (cursor <= hasta) {
+      if (enRango(cursor, desde, hasta)) fechas.push(new Date(cursor.getTime()));
+      cursor = new Date(cursor.getFullYear(), cursor.getMonth() + paso, dia);
+    }
+    return fechas;
+  }
+
+  if (periodicidad === 'UNICA') {
+    return esFecha(vencimiento) && enRango(vencimiento, desde, hasta)
+      ? [new Date(vencimiento.getFullYear(), vencimiento.getMonth(), vencimiento.getDate())]
+      : [];
+  }
+
+  return [];
+}
+
+/** Índice de la semana que contiene la fecha, o -1. */
+function semanaDe(semanas, fecha) {
+  for (var i = 0; i < semanas.length; i++) {
+    if (enRango(fecha, semanas[i].desde, sumarDias(semanas[i].hasta, 1))) {
+      if (fecha <= semanas[i].hasta) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Todas las obligaciones activas convertidas en vencimientos concretos, con el
+ * monto ya resuelto: porcentaje sobre las ventas de esa semana si corresponde,
+ * y ajuste por inflación si la obligación lo pide.
+ */
+function expandirObligaciones(obligaciones, semanas, brutoPorSemana, cfg, hoy) {
+  if (!semanas.length) return [];
+  var desde = semanas[0].desde;
+  var hasta = semanas[semanas.length - 1].hasta;
+  var inflacion = Number(cfg.INFLACION_MENSUAL_PCT) || 0;
+  var vencimientos = [];
+
+  obligaciones.forEach(function (obl) {
+    if (String(obl[COL_OBL.ACTIVO]).toUpperCase() !== 'SI') return;
+
+    ocurrenciasDeObligacion(obl, desde, hasta).forEach(function (fecha) {
+      var semana = semanaDe(semanas, fecha);
+      if (semana === -1) return;
+
+      var monto;
+      if (obl[COL_OBL.TIPO_MONTO] === 'PCT_VENTAS') {
+        monto = (brutoPorSemana[semana] || 0) * Number(obl[COL_OBL.MONTO]) / 100;
+      } else {
+        monto = Number(obl[COL_OBL.MONTO]) || 0;
+      }
+
+      if (String(obl[COL_OBL.AJUSTA]).toUpperCase() === 'SI') {
+        monto *= factorInflacion(hoy, fecha, inflacion);
+      }
+
+      vencimientos.push({
+        id: obl[COL_OBL.ID],
+        fecha: fecha,
+        semana: semana,
+        concepto: obl[COL_OBL.CONCEPTO],
+        acreedor: obl[COL_OBL.ACREEDOR],
+        categoria: obl[COL_OBL.CATEGORIA],
+        criticidad: Number(obl[COL_OBL.CRITICIDAD]) || 0,
+        consecuencia: obl[COL_OBL.CONSECUENCIA],
+        cuenta: obl[COL_OBL.CUENTA],
+        monto: Math.round(monto)
+      });
+    });
+  });
+
+  return vencimientos.sort(function (a, b) { return a.fecha - b.fecha; });
+}
+
+// --- Ingresos ---------------------------------------------------------------
+
+/**
+ * Reparte las ventas de cada semana en las semanas en que la plata se acredita.
+ *
+ * Con LAG_ACREDITACION_DIAS = 1, lo vendido de lunes a sábado se cobra en la
+ * misma semana y lo del domingo cae en la siguiente: 6/7 y 1/7. La misma
+ * cuenta sirve para un plazo de 7 o 14 días, que desplaza semanas enteras.
+ */
+function distribuirIngresos(brutoPorSemana, pctNeto, lagDias) {
+  var n = brutoPorSemana.length;
+  var ingresos = new Array(n).fill(0);
+  var corrimiento = Math.floor(lagDias / 7);
+  var resto = lagDias % 7;
+  var fraccionSiguiente = resto / 7;
+
+  for (var i = 0; i < n; i++) {
+    var neto = (brutoPorSemana[i] || 0) * pctNeto / 100;
+    var destino = i + corrimiento;
+    if (destino < n) ingresos[destino] += neto * (1 - fraccionSiguiente);
+    if (destino + 1 < n) ingresos[destino + 1] += neto * fraccionSiguiente;
+  }
+
+  // La cola que entra desde antes del arranque: lo vendido justo antes del
+  // lunes de la semana 1, que todavía no está en el saldo. Se estima con el
+  // ritmo de la primera semana.
+  if (n > 0 && fraccionSiguiente > 0) {
+    ingresos[0] += (brutoPorSemana[0] || 0) * pctNeto / 100 * fraccionSiguiente;
+  }
+
+  return ingresos.map(function (v) { return Math.round(v); });
+}
+
+// --- Proyección -------------------------------------------------------------
+
+/**
+ * Arma las 13 filas del cashflow.
+ *
+ * `pagados` es un set de "OBL-XXX|semana": vencimientos que ya se pagaron y no
+ * hay que volver a restar. Sin esto la semana en curso miente siempre.
+ */
+function proyectar(entrada) {
+  var semanas = entrada.semanas;
+  var cfg = entrada.cfg;
+  var saldoInicial = (Number(cfg.SALDO_MERCADO_PAGO) || 0) + (Number(cfg.SALDO_EFECTIVO) || 0);
+  var colchon = Number(cfg.COLCHON_MINIMO) || 0;
+
+  var ingresos = distribuirIngresos(
+    entrada.brutoPorSemana,
+    Number(cfg.PCT_NETO_SOBRE_BRUTO) || 0,
+    Number(cfg.LAG_ACREDITACION_DIAS) || 0
+  );
+
+  var vencimientos = expandirObligaciones(
+    entrada.obligaciones, semanas, entrada.brutoPorSemana, cfg, entrada.hoy
+  );
+
+  var filas = [];
+  var saldo = saldoInicial;
+
+  for (var i = 0; i < semanas.length; i++) {
+    var delSemana = vencimientos.filter(function (v) {
+      return v.semana === i && !(entrada.pagados || {})[v.id + '|' + i];
+    });
+
+    var egresos = { mercaderia: 0, impuestos: 0, deuda: 0, fijos: 0 };
+    delSemana.forEach(function (v) {
+      var destino = COLUMNA_POR_CATEGORIA[v.categoria] || 'fijos';
+      egresos[destino] += v.monto;
+    });
+
+    var total = egresos.mercaderia + egresos.impuestos + egresos.deuda + egresos.fijos;
+    var saldoFinal = saldo + ingresos[i] - total;
+
+    filas.push({
+      numero: semanas[i].numero,
+      desde: semanas[i].desde,
+      hasta: semanas[i].hasta,
+      saldoInicial: Math.round(saldo),
+      ingresos: ingresos[i],
+      mercaderia: egresos.mercaderia,
+      fijos: egresos.fijos,
+      impuestos: egresos.impuestos,
+      deuda: egresos.deuda,
+      saldoFinal: Math.round(saldoFinal),
+      estado: saldoFinal < 0 ? ESTADO.ROJO : (saldoFinal < colchon ? ESTADO.ATENCION : ESTADO.OK),
+      vencimientos: delSemana
+    });
+
+    saldo = saldoFinal;
+  }
+
+  return { filas: filas, quiebre: primerQuiebre(filas, entrada.hoy) };
+}
+
+/**
+ * La primera semana que cierra en negativo, y cuántos días faltan.
+ * Es el número que contesta "¿cuánto aire me queda?".
+ */
+function primerQuiebre(filas, hoy) {
+  for (var i = 0; i < filas.length; i++) {
+    if (filas[i].estado !== ESTADO.ROJO) continue;
+    return {
+      semana: filas[i].numero,
+      desde: filas[i].desde,
+      hasta: filas[i].hasta,
+      faltan: -filas[i].saldoFinal,
+      dias: Math.max(0, Math.round((filas[i].hasta - hoy) / MS_DIA))
+    };
+  }
+  return null;
+}
+
+/** Primera semana que perfora el colchón, aunque no llegue a negativo. */
+function primeraAtencion(filas) {
+  for (var i = 0; i < filas.length; i++) {
+    if (filas[i].estado === ESTADO.ATENCION) return filas[i];
+  }
+  return null;
+}
+
+/** Los vencimientos más grandes de la semana, para la columna Detalle. */
+function resumenDeSemana(fila, cuantos) {
+  return fila.vencimientos
+    .slice()
+    .sort(function (a, b) { return b.monto - a.monto; })
+    .slice(0, cuantos || 3)
+    .map(function (v) { return v.concepto + ' ' + pesos(v.monto); })
+    .join(' · ');
+}
+
+function pesos(n) {
+  var entero = Math.round(Math.abs(n)).toString();
+  var partes = [];
+  while (entero.length > 3) {
+    partes.unshift(entero.slice(-3));
+    entero = entero.slice(0, -3);
+  }
+  partes.unshift(entero);
+  return (n < 0 ? '-$' : '$') + partes.join('.');
+}
+
+// ========================================================================
+// 07_Proyeccion.gs
+// ========================================================================
+
+/**
+ * NUVELA · Cashflow — Lectura del Sheet, ejecución del motor y escritura.
+ *
+ * Toda la aritmética vive en 06_Motor.gs. Acá solo se lee, se llama y se pinta.
+ */
+
+var COLOR_ESTADO = {
+  ROJO: { fondo: '#FBE3E3', texto: '#A02020' },
+  ATENCION: { fondo: '#FFF6E0', texto: '#8A6100' },
+  OK: { fondo: null, texto: null }
+};
+
+function actualizarProyeccion() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cfg = leerConfig(ss);
+  var hoy = new Date();
+
+  var problemas = validarObligaciones(filasDe(ss, ESQUEMA.OBLIGACIONES));
+  if (problemas.length) {
+    SpreadsheetApp.getUi().alert(
+      'No proyecto con datos rotos',
+      'Arreglá esto primero:\n\n' + problemas.join('\n\n'),
+      SpreadsheetApp.getUi().ButtonSet.OK
+    );
+    return;
+  }
+
+  var ventas = filasDe(ss, ESQUEMA.VENTAS).filter(function (f) { return esFecha(f[COL_VENTAS.DESDE]); });
+  if (!ventas.length) {
+    SpreadsheetApp.getUi().alert('Falta cargar la hoja Ventas.');
+    return;
+  }
+
+  var semanas = ventas.map(function (f, i) {
+    return { numero: i + 1, desde: f[COL_VENTAS.DESDE], hasta: f[COL_VENTAS.HASTA] };
+  });
+
+  // El real manda sobre el proyectado: una semana ya cerrada no se estima.
+  var brutoPorSemana = ventas.map(function (f) {
+    return Number(f[COL_VENTAS.REAL]) || Number(f[COL_VENTAS.PROYECTADO]) || 0;
+  });
+
+  var resultado = proyectar({
+    semanas: semanas,
+    brutoPorSemana: brutoPorSemana,
+    obligaciones: filasDe(ss, ESQUEMA.OBLIGACIONES),
+    cfg: cfg,
+    hoy: hoy,
+    pagados: pagosPorSemana(filasDe(ss, ESQUEMA.MOVIMIENTOS), semanas)
+  });
+
+  escribirNetoEstimado(ss, brutoPorSemana, Number(cfg.PCT_NETO_SOBRE_BRUTO) || 0);
+  escribirCashflow(ss, resultado, hoy);
+
+  SpreadsheetApp.getUi().alert('NUVELA · Cashflow', mensajeResumen(resultado, cfg),
+                               SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+/** Filas con datos de una hoja, sin la cabecera. */
+function filasDe(ss, definicion) {
+  var hoja = ss.getSheetByName(definicion.nombre);
+  if (!hoja || hoja.getLastRow() < 2) return [];
+  return hoja.getRange(2, 1, hoja.getLastRow() - 1, definicion.columnas.length).getValues();
+}
+
+/**
+ * Vencimientos ya pagados, indexados por "OBL-XXX|semana".
+ * Se toma la semana del movimiento, no la del vencimiento: se paga cuando se
+ * puede, no cuando vence, y lo que importa es que no se cuente dos veces.
+ */
+function pagosPorSemana(movimientos, semanas) {
+  var pagados = {};
+  movimientos.forEach(function (m) {
+    var id = String(m[COL_MOV.OBLIGACION] || '').trim();
+    if (!id || !esFecha(m[COL_MOV.FECHA])) return;
+    var i = semanaDe(semanas, m[COL_MOV.FECHA]);
+    if (i !== -1) pagados[id + '|' + i] = true;
+  });
+  return pagados;
+}
+
+function escribirNetoEstimado(ss, brutoPorSemana, pctNeto) {
+  var hoja = ss.getSheetByName(ESQUEMA.VENTAS.nombre);
+  hoja.getRange(2, COL_VENTAS.NETO + 1, brutoPorSemana.length, 1).setValues(
+    brutoPorSemana.map(function (b) { return [Math.round(b * pctNeto / 100)]; })
+  );
+}
+
+function escribirCashflow(ss, resultado, hoy) {
+  var def = ESQUEMA.CASHFLOW;
+  var hoja = ss.getSheetByName(def.nombre);
+  var quiebre = resultado.quiebre;
+
+  if (hoja.getLastRow() > 1) {
+    hoja.getRange(2, 1, hoja.getLastRow() - 1, def.columnas.length).clear();
+  }
+
+  var filas = resultado.filas.map(function (f) {
+    return [f.numero, f.desde, f.hasta, f.saldoInicial, f.ingresos, f.mercaderia,
+            f.fijos, f.impuestos, f.deuda, f.saldoFinal, f.estado, detalleDe(f, quiebre, hoy)];
+  });
+
+  hoja.getRange(2, 1, filas.length, def.columnas.length).setValues(filas);
+
+  resultado.filas.forEach(function (f, i) {
+    var color = COLOR_ESTADO[f.estado];
+    var rango = hoja.getRange(i + 2, 1, 1, def.columnas.length);
+    rango.setBackground(color.fondo).setFontColor(color.texto);
+    if (f.estado !== 'OK') hoja.getRange(i + 2, 11).setFontWeight('bold');
+  });
+
+  hoja.getRange(2, 12, filas.length, 1).setWrap(true);
+}
+
+function detalleDe(fila, quiebre, hoy) {
+  var partes = [];
+
+  if (fila.estado === 'ROJO') {
+    partes.push('QUIEBRE: faltan ' + pesos(-fila.saldoFinal));
+  } else if (fila.estado === 'ATENCION') {
+    partes.push('Bajo el colchón mínimo');
+  }
+
+  // En la primera semana se avisa cuánto aire queda hasta el quiebre.
+  if (fila.numero === 1 && quiebre) {
+    partes.push(quiebre.semana === 1
+      ? 'El quiebre es esta semana'
+      : 'Primer quiebre en la semana ' + quiebre.semana + ', dentro de ' + quiebre.dias + ' días');
+  }
+
+  var resumen = resumenDeSemana(fila, 3);
+  if (resumen) partes.push(resumen);
+  return partes.join(' — ');
+}
+
+function mensajeResumen(resultado, cfg) {
+  var quiebre = resultado.quiebre;
+  var ultima = resultado.filas[resultado.filas.length - 1];
+  var lineas = ['Proyección actualizada: ' + resultado.filas.length + ' semanas.', ''];
+
+  if (quiebre) {
+    lineas.push('QUIEBRE en la semana ' + quiebre.semana +
+                ' (' + formatearFecha(quiebre.desde) + ' al ' + formatearFecha(quiebre.hasta) + ').');
+    lineas.push('Faltan ' + pesos(quiebre.faltan) + '. Tenés ' + quiebre.dias + ' días de aviso.');
+  } else {
+    var atencion = primeraAtencion(resultado.filas);
+    lineas.push(atencion
+      ? 'Sin quiebre, pero la semana ' + atencion.numero + ' baja del colchón (' +
+        pesos(atencion.saldoFinal) + ' contra un mínimo de ' + pesos(Number(cfg.COLCHON_MINIMO) || 0) + ').'
+      : 'Ninguna semana cierra en negativo ni baja del colchón.');
+  }
+
+  lineas.push('', 'Saldo al cierre de la semana ' + ultima.numero + ': ' + pesos(ultima.saldoFinal) + '.');
+  return lineas.join('\n');
+}
+
+function formatearFecha(d) {
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2);
 }

@@ -26,9 +26,9 @@ var CONFIG_SEMILLA = [
   ['PCT_COSTO_MERCADERIA', 46.2, '%',
    'Costo de la mercadería sobre facturación bruta. Junio 2026: $5.073.318 sobre $10.980.981.',
    'MEDIDO'],
-  ['PCT_MOTOMENSAJERIA', 5.9, '%',
-   'Motomensajería (Elimonca) sobre facturación bruta. Junio $650.500. Referencia por si conviene proyectarla como % en vez de monto semanal fijo.',
-   'MEDIDO'],
+  ['PCT_MOTOMENSAJERIA', 4.3, '%',
+   'Motomensajería (Elimonca) sobre facturación bruta. Se paga por envío, así que sube y baja con las ventas. 4,3% son ~$120.000 sobre la venta semanal de referencia, el nivel declarado hoy. Junio corrió al 5,9% ($650.500/mes).',
+   'DECLARADO'],
 
   // --- Impuestos ----------------------------------------------------------
   ['ALICUOTA_IVA', 21, '%',

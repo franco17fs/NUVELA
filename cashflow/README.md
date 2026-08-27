@@ -9,7 +9,7 @@ y **si no alcanza, qué se paga primero y qué queda afuera**.
 | Etapa | Qué incluye | Estado |
 |---|---|---|
 | 1 | Modelo de datos + carga de las obligaciones reales | ✅ listo |
-| 2 | Proyección de 13 semanas | pendiente |
+| 2 | Proyección de 13 semanas | ✅ listo |
 | 3 | Priorización y alertas | pendiente |
 | 4 | Simulador de escenarios | pendiente |
 | 5 | Importación automática de liquidaciones de ML | pendiente |
@@ -52,8 +52,34 @@ la planilla miente sin avisar.
 1. `Config` → actualizar `SALDO_MERCADO_PAGO`.
 2. `Ventas` → completar `Bruto_Real` de la semana que terminó y ajustar el proyectado de la que viene.
 3. `Movimientos` → anotar lo que se pagó.
-4. Menú → **Actualizar proyección** *(Etapa 2)*.
-5. Leer `Esta Semana`.
+4. Menú → **Actualizar proyección**.
+5. Leer `Cashflow 13S` (y `Esta Semana`, desde la Etapa 3).
+
+## Cómo proyecta
+
+Arrastre semanal simple — `saldo final = saldo inicial + ingresos − egresos`, y el
+final de una semana es el inicial de la siguiente. Lo que no es simple es cómo se
+arma cada término:
+
+- **Ingresos.** Las ventas de la semana entran netas (67,3%) y se reparten según el
+  plazo de acreditación. Con 1 día, 6/7 se cobran en la misma semana y 1/7 —lo del
+  domingo— cae en la siguiente. La misma cuenta sirve para 7 o 14 días de plazo, que
+  desplazan semanas enteras.
+- **Vencimientos.** Cada obligación se expande a fechas concretas: "todos los lunes"
+  se vuelve 13 fechas, "el día 10" se vuelve una por mes. Un vencimiento anterior al
+  arranque no se cuela.
+- **Montos.** `PCT_VENTAS` se resuelve con las ventas de esa semana puntual, así que
+  la mercadería y la moto suben cuando la semana vende más. Los montos fijos marcados
+  `Ajusta_Inflacion = SI` crecen con los meses de distancia. **Un `PCT_VENTAS` nunca
+  ajusta por inflación**: si las ventas ya suben con los precios, ajustarlo otra vez
+  la cuenta dos veces.
+- **Lo ya pagado.** Un movimiento con `Obligacion_ID` saca ese vencimiento de la
+  semana. Sin eso la semana en curso miente siempre.
+- **El real manda.** Si una semana tiene `Bruto_Real`, se usa ese y se ignora el
+  proyectado.
+
+Rojo = cierra en negativo. Amarillo = queda por debajo del colchón. El aviso dice qué
+semana rompe, cuánto falta y cuántos días hay de anticipación.
 
 ## Cómo modela la plata
 

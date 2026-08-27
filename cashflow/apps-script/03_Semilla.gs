@@ -29,13 +29,13 @@ var OBLIGACIONES_SEMILLA = [
    'NO es el total facturado (~$4.400.000/mes). ML descuenta casi todo de las liquidaciones diarias; esto es el "Total adeudado" que queda a pagar. Histórico: $400.000–$700.000. Se lee en vendedores.mercadolibre.com.ar/billing/resume. YA INCLUYE ADS: no cargar publicidad aparte.'],
 
   ['OBL-003', 'SI', 'Motomensajería (Flex)', 'Elimonca', 'LOGISTICA', 5,
-   'ESTIMADO', 250000, 'SEMANAL', 'LUN', 'SI',
+   'PCT_VENTAS', 4.3, 'SEMANAL', 'LUN', 'NO',
    'Sin moto no hay entrega. Sin entrega Mercado Libre no libera la plata de esas ventas: cortar la moto corta el ingreso con una semana de retraso.',
    'EFECTIVO',
-   'Declarado $200.000–$300.000/semana. Real de junio: $650.500/mes (~$150.000/semana); mayo $954.700 (~$220.000/semana). Alternativa: Tipo_Monto = PCT_VENTAS con 5,9.'],
+   'Va como % porque se paga por envío: cuando la semana vende más, la moto cuesta más. 4,3% da ~$120.000 sobre la venta semanal de referencia, que es el nivel declarado hoy. Histórico más alto: junio 5,9% ($650.500/mes), mayo $954.700. Si la semana se dispara, revisar el %.'],
 
   ['OBL-004', 'SI', 'Compra de mercadería', 'Proveedores varios', 'MERCADERIA', 4,
-   'PCT_VENTAS', 46.2, 'SEMANAL', 'LUN', 'SI',
+   'PCT_VENTAS', 46.2, 'SEMANAL', 'LUN', 'NO',
    'Sin reposición caen las ventas en 2 o 3 semanas. Es la única obligación cuyo timing elegís vos: todos los proveedores son de contado.',
    'MERCADO_PAGO',
    '46,2% de la facturación bruta (junio 2026: $5.073.318 sobre $10.980.981). Es la palanca principal del simulador: correr una compra una semana es la forma más rápida de destrabar una semana en rojo.'],

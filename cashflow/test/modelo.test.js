@@ -34,14 +34,23 @@ test('las constantes del modelo reconcilian con junio 2026', () => {
   assert.ok(Math.abs(mercaderia - JUNIO.costoProducto) < 30_000,
     `mercadería proyectada ${Math.round(mercaderia)} vs real ${JUNIO.costoProducto}`);
 
-  const moto = JUNIO.bruto * cfg.PCT_MOTOMENSAJERIA / 100;
-  assert.ok(Math.abs(moto - JUNIO.flex) < 30_000,
-    `moto proyectada ${Math.round(moto)} vs real ${JUNIO.flex}`);
-
-  // La cadena completa tiene que reproducir la ganancia del informe.
-  const gananciaPreAds = neto - mercaderia - moto;
+  // La cadena tiene que reproducir la ganancia del informe. Se usa el Flex real
+  // de junio y no el porcentaje de Config: la moto se renegoció y hoy corre más
+  // barata, así que el ratio vigente ya no describe junio.
+  const gananciaPreAds = neto - mercaderia - JUNIO.flex;
   assert.ok(Math.abs(gananciaPreAds - JUNIO.gananciaPreAds) < 60_000,
     `ganancia pre-ads ${Math.round(gananciaPreAds)} vs real ${JUNIO.gananciaPreAds}`);
+});
+
+test('la motomensajería está calibrada al nivel declarado hoy', () => {
+  // Franco: ~$120.000 por semana, y sube o baja según las ventas de la semana.
+  const semanal = cfg.VENTA_BRUTA_SEMANAL_BASE * cfg.PCT_MOTOMENSAJERIA / 100;
+  assert.ok(Math.abs(semanal - 120_000) < 2_000,
+    `${Math.round(semanal)}/semana con el % de Config, se declaró ~$120.000`);
+
+  // Junio corrió al 5,9%: el ratio bajó, no se perdió el dato.
+  assert.ok(cfg.PCT_MOTOMENSAJERIA < JUNIO.flex / JUNIO.bruto * 100,
+    'el ratio vigente debería ser menor que el de junio');
 });
 
 test('la venta semanal de referencia coincide con el promedio real', () => {

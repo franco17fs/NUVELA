@@ -6,8 +6,9 @@
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('NUVELA Cashflow')
-    .addItem('Crear / reparar sistema', 'crearSistema')
+    .addItem('Actualizar proyección', 'actualizarProyeccion')
     .addSeparator()
+    .addItem('Crear / reparar sistema', 'crearSistema')
     .addItem('Revisar carga', 'revisarCarga')
     .addToUi();
 }
