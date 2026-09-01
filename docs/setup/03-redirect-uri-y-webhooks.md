@@ -46,6 +46,8 @@ Es la única opción que habilita webhooks de verdad.
 Un túnel expone tu `localhost` con una URL HTTPS pública. Sirve para redirect
 **y** para webhooks.
 
+Esto se corre **en una terminal**, no se pega en ningún formulario:
+
 ```bash
 # Cloudflare (no requiere cuenta para pruebas rápidas)
 cloudflared tunnel --url http://localhost:3000
@@ -54,13 +56,17 @@ cloudflared tunnel --url http://localhost:3000
 ngrok http 3000
 ```
 
-Te da algo como `https://algo-random.trycloudflare.com`. Cargá esa URL en el
-DevCenter y en el `.env`:
+El comando queda corriendo e imprime una URL, algo como
+`https://algo-random.trycloudflare.com`. **Esa URL** —más la ruta del callback—
+es lo que va en el DevCenter y en el `.env`:
 
 ```bash
 APP_BASE_URL="https://algo-random.trycloudflare.com"
 ML_REDIRECT_URI="https://algo-random.trycloudflare.com/api/oauth/mercadolibre/callback"
 ```
+
+El túnel tiene que seguir abierto mientras conectás las cuentas: si lo cerrás,
+la URL deja de responder.
 
 **La contra:** con un túnel gratuito la URL cambia cada vez que lo reiniciás, y
 hay que actualizarla en los dos lados. Para una conexión inicial está bien; para

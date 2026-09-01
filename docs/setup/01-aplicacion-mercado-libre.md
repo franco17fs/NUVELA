@@ -56,6 +56,26 @@ Si todavía no, mirá la guía
 [3 · Redirect URI y webhooks](./03-redirect-uri-y-webhooks.md): están las tres
 alternativas para desarrollo local.
 
+> **Fijate que la URL termine en `/api/oauth/mercadolibre/callback`.** Es la ruta
+> que atiende el callback; el dominio solo no alcanza.
+
+El formulario tiene un botón **Agregar Redirect URI**, así que podés cargar
+varias. Conviene: dejás la de desarrollo ahora y sumás la de producción cuando
+deployes, sin tener que borrar nada. El `.env` apunta a una a la vez.
+
+### Flujos OAuth
+
+| Flujo | Marcar | Por qué |
+|---|---|---|
+| **Authorization Code** | ✅ | Es el flujo que usa la aplicación |
+| **Refresh Token** | ✅ | **Imprescindible.** Sin él, el `grant_type=refresh_token` responde `unsupported_grant_type` y habría que reconectar las cuentas **cada 6 horas** |
+| **Client Credentials** | ❌ | Sirve para que la aplicación actúe sin usuario. NUVELA no lo usa |
+| **pkce** | ✅ | La implementación manda `code_challenge` y `code_verifier` siempre |
+
+El más fácil de pasar por alto es **Refresh Token**, que viene desmarcado por
+defecto. Todo el mecanismo de renovación automática —incluido el lock que
+serializa el refresh, porque el token es de un solo uso— depende de ese flujo.
+
 ### Scopes
 
 Marcá:
