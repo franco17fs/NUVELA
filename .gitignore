@@ -1,0 +1,21 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+coverage/
+
+# Secretos: nunca commitear
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Descargas de reportes de Mercado Pago (contienen datos de operaciones)
+/storage/
+*.tsbuildinfo
+next-env.d.ts
+
+.DS_Store
+*.log
+npm-debug.log*

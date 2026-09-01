@@ -1,0 +1,1429 @@
+// =============================================================================
+// NUVELA — modelo de datos
+//
+// Reglas transversales (ver docs/database-model.md):
+//   1. DINERO = Decimal(18,4). Nunca Float, nunca Int redondeado.
+//   2. Todo importe relevante guarda `source`, `sourceReferenceId` y `syncedAt`.
+//   3. Todo importe guarda `kind` (ACTUAL / ESTIMATED / FORECAST). Una estimación
+//      jamás se presenta como un cargo real.
+//   4. Nada se comparte entre sellers: casi todas las tablas cuelgan de
+//      `sellerAccountId` y las claves únicas lo incluyen.
+//   5. La información histórica no se sobrescribe: los snapshots financieros del
+//      momento de la venta son inmutables.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums transversales
+// -----------------------------------------------------------------------------
+
+/// De dónde salió el número. Obligatorio en todo importe importante (§38 del brief).
+enum MoneySource {
+  MELI_API /// API de Mercado Libre
+  MP_API /// API de Mercado Pago
+  BILLING_REPORT /// Reportes de facturación ML/MP
+  MANUAL /// Cargado por el usuario
+  CALCULATED /// Derivado por el motor financiero a partir de otros datos
+  FORECAST /// Proyección
+}
+
+/// Qué tan firme es el número (§39 del brief).
+enum ValueKind {
+  ACTUAL /// Cargo real, confirmado por la fuente
+  ESTIMATED /// Estimación sobre datos conocidos (ej. listing_prices)
+  FORECAST /// Proyección a futuro
+}
+
+enum AccountStatus {
+  ACTIVE
+  TOKEN_EXPIRED
+  REVOKED
+  DISCONNECTED
+}
+
+enum Provider {
+  MERCADO_LIBRE
+  MERCADO_PAGO
+}
+
+// -----------------------------------------------------------------------------
+// Cuentas y credenciales
+// -----------------------------------------------------------------------------
+
+model SellerAccount {
+  id                String        @id @default(cuid())
+  /// user_id de Mercado Libre. Único a nivel global: la misma cuenta no se conecta dos veces.
+  mercadoLibreUserId BigInt       @unique
+  nickname          String
+  accountName       String
+  siteId            String        @default("MLA")
+  /// user_id de Mercado Pago. En la práctica coincide con el de ML, pero se guarda
+  /// aparte porque las credenciales y los reportes son de otra aplicación.
+  mercadoPagoUserId BigInt?
+  /// advertiser_id de Product Ads (GET /advertising/advertisers?product_id=PADS)
+  advertiserId      BigInt?
+  status            AccountStatus @default(ACTIVE)
+  /// Color con el que se distingue la cuenta en toda la UI.
+  colorHex          String        @default("#2563eb")
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  tokens                OAuthToken[]
+  orders                Order[]
+  payments              Payment[]
+  refunds               Refund[]
+  shipments             Shipment[]
+  marketplaceFees       MarketplaceFee[]
+  billingPeriods        BillingPeriod[]
+  mpMovements           MercadoPagoMovement[]
+  adCampaigns           AdCampaign[]
+  adMetrics             AdMetricDaily[]
+  listingMappings       ListingMapping[]
+  purchases             Purchase[]
+  expenses              Expense[]
+  incomes               Income[]
+  obligations           Obligation[]
+  reserves              Reserve[]
+  cashflowEntries       CashflowEntry[]
+  forecasts             Forecast[]
+  reconciliationIssues  ReconciliationIssue[]
+  fiscalProfiles        FiscalProfile[]
+  syncJobs              SyncJob[]
+  webhookEvents         WebhookEvent[]
+  inventoryMovements    InventoryMovement[]
+  syncCursors           SyncCursor[]
+
+  @@index([status])
+}
+
+/// Tokens OAuth. Los valores viajan cifrados con AES-256-GCM (ver src/lib/crypto.ts).
+/// El refresh_token de Mercado Libre es de UN SOLO USO: `refreshLockedAt` serializa
+/// los refresh concurrentes para no invalidar la cuenta.
+model OAuthToken {
+  id                    String   @id @default(cuid())
+  sellerAccountId       String
+  provider              Provider
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  tokenExpiration       DateTime
+  scope                 String?
+  /// Marca temporal del lock de refresh; null = libre.
+  refreshLockedAt       DateTime?
+  lastRefreshedAt       DateTime?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerAccountId, provider])
+  @@index([tokenExpiration])
+}
+
+/// Estado del flujo OAuth en curso: guarda el `state` y el `code_verifier` de PKCE.
+/// Vive poco (se borra al consumirse o al expirar).
+model OAuthFlowState {
+  id           String   @id @default(cuid())
+  state        String   @unique
+  codeVerifier String
+  provider     Provider
+  redirectTo   String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+// -----------------------------------------------------------------------------
+// Ventas
+// -----------------------------------------------------------------------------
+
+enum OrderStatus {
+  CONFIRMED
+  PAYMENT_REQUIRED
+  PAYMENT_IN_PROCESS
+  PARTIALLY_PAID
+  PAID
+  PARTIALLY_REFUNDED
+  CANCELLED
+  INVALID
+  UNKNOWN
+}
+
+model Order {
+  id              String      @id @default(cuid())
+  sellerAccountId String
+  /// id de la orden en Mercado Libre
+  mlOrderId       BigInt
+  /// pack_id (carrito). Varias órdenes comparten pack y UN SOLO costo de envío.
+  packId          BigInt?
+  status          OrderStatus
+  statusDetail    String?
+  currencyId      String      @default("ARS")
+
+  /// Importes tal como los devuelve la API de órdenes.
+  totalAmount   Decimal  @db.Decimal(18, 4)
+  paidAmount    Decimal  @db.Decimal(18, 4)
+  couponAmount  Decimal  @default(0) @db.Decimal(18, 4)
+  /// shipping_cost a nivel orden (lo que pagó el comprador, no el costo del vendedor).
+  shippingCost  Decimal  @default(0) @db.Decimal(18, 4)
+  taxesAmount   Decimal  @default(0) @db.Decimal(18, 4)
+
+  dateCreated     DateTime
+  dateClosed      DateTime?
+  dateLastUpdated DateTime
+  /// Fecha de negocio (día local en APP_TIMEZONE) usada por todos los cortes de P&L.
+  businessDate    DateTime  @db.Date
+
+  buyerId         BigInt?
+  tags            String[]  @default([])
+  cancelGroup     String?
+  cancelCode      String?
+  cancelReason    String?
+
+  /// Devoluciones/cancelaciones ya aplicadas sobre esta orden.
+  refundedAmount  Decimal @default(0) @db.Decimal(18, 4)
+
+  /// Snapshot íntegro de la respuesta de la API al momento de sincronizar.
+  /// Es la evidencia de auditoría: permite reprocesar sin volver a llamar a ML.
+  rawPayload      Json?
+
+  source            MoneySource @default(MELI_API)
+  sourceReferenceId String?
+  syncedAt          DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  sellerAccount   SellerAccount    @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  items           OrderItem[]
+  payments        Payment[]
+  shipments       Shipment[]
+  marketplaceFees MarketplaceFee[]
+  refunds         Refund[]
+  profitability   OrderProfitability?
+
+  /// Idempotencia: la misma orden no puede entrar dos veces para el mismo seller.
+  @@unique([sellerAccountId, mlOrderId])
+  @@index([sellerAccountId, businessDate])
+  @@index([sellerAccountId, dateLastUpdated])
+  @@index([sellerAccountId, status])
+  @@index([packId])
+}
+
+model OrderItem {
+  id      String @id @default(cuid())
+  orderId String
+  /// Posición dentro de order_items[]: da unicidad estable sin depender del contenido.
+  position Int
+
+  mlItemId     String
+  variationId  String?
+  title        String
+  categoryId   String?
+  listingTypeId String?
+  /// SKU declarado por el vendedor en la publicación (seller_sku / seller_custom_field).
+  sellerSku    String?
+
+  quantity   Int
+  unitPrice  Decimal  @db.Decimal(18, 4)
+  /// gross_price: monto original por todas las unidades, sin descuentos.
+  grossPrice Decimal? @db.Decimal(18, 4)
+  /// Porción del descuento a cargo del vendedor (GET /orders/{id}/discounts → seller).
+  sellerDiscount Decimal @default(0) @db.Decimal(18, 4)
+
+  /// COMISIÓN REAL cobrada por Mercado Libre (order_items[].sale_fee).
+  /// Es por unidad tal como la devuelve la API; el total se calcula en el motor.
+  saleFee     Decimal?    @db.Decimal(18, 4)
+  saleFeeKind ValueKind   @default(ACTUAL)
+  saleFeeSource MoneySource @default(MELI_API)
+
+  /// COGS congelado en el momento de procesar la venta. NUNCA se recalcula
+  /// con el costo actual del SKU (§14 del brief).
+  cogsUnitCost   Decimal? @db.Decimal(18, 4)
+  cogsTotal      Decimal? @db.Decimal(18, 4)
+  cogsMethod     String?
+  cogsAppliedAt  DateTime?
+
+  /// SKU interno resuelto vía ListingMapping o sellerSku.
+  skuId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku   Sku?  @relation(fields: [skuId], references: [id], onDelete: SetNull)
+
+  @@unique([orderId, position])
+  @@index([mlItemId])
+  @@index([skuId])
+  @@index([sellerSku])
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  AUTHORIZED
+  IN_PROCESS
+  IN_MEDIATION
+  REJECTED
+  CANCELLED
+  REFUNDED
+  CHARGED_BACK
+  UNKNOWN
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  sellerAccountId String
+  orderId         String?
+  mlPaymentId     BigInt
+  status          PaymentStatus
+  statusDetail    String?
+  currencyId      String        @default("ARS")
+
+  transactionAmount Decimal @db.Decimal(18, 4)
+  totalPaidAmount   Decimal @default(0) @db.Decimal(18, 4)
+  /// marketplace_fee: cargo realmente aplicado por Mercado Libre a este pago.
+  marketplaceFee    Decimal @default(0) @db.Decimal(18, 4)
+  taxesAmount       Decimal @default(0) @db.Decimal(18, 4)
+  shippingCost      Decimal @default(0) @db.Decimal(18, 4)
+  couponAmount      Decimal @default(0) @db.Decimal(18, 4)
+  overpaidAmount    Decimal @default(0) @db.Decimal(18, 4)
+  /// net_received_amount de Mercado Pago cuando está disponible.
+  netReceivedAmount Decimal? @db.Decimal(18, 4)
+
+  installments     Int?
+  installmentAmount Decimal? @db.Decimal(18, 4)
+  paymentType      String?
+  paymentMethodId  String?
+  operationType    String?
+
+  dateCreated  DateTime
+  dateApproved DateTime?
+  /// money_release_date: CUÁNDO el dinero pasa a estar disponible.
+  /// Es la pieza que separa VENTA de COBRO en todo el cashflow.
+  moneyReleaseDate DateTime?
+  /// Fecha de negocio del cobro (no de la venta).
+  cashBusinessDate DateTime? @db.Date
+
+  rawPayload Json?
+
+  source            MoneySource @default(MELI_API)
+  sourceReferenceId String?
+  syncedAt          DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  refunds       Refund[]
+  mpMovements   MercadoPagoMovement[]
+
+  @@unique([sellerAccountId, mlPaymentId])
+  @@index([sellerAccountId, moneyReleaseDate])
+  @@index([sellerAccountId, status])
+  @@index([orderId])
+}
+
+enum RefundType {
+  TOTAL
+  PARTIAL
+  CHARGEBACK
+  CANCELLATION
+}
+
+model Refund {
+  id              String     @id @default(cuid())
+  sellerAccountId String
+  orderId         String?
+  paymentId       String?
+  /// Identificador de la fuente (refund id de MP, claim id, etc.).
+  externalId      String
+  type            RefundType
+  amount          Decimal    @db.Decimal(18, 4)
+  currencyId      String     @default("ARS")
+  reason          String?
+  claimId         BigInt?
+  /// Costo del retorno a cargo del vendedor
+  /// (post-purchase/v1/claims/{id}/charges/return-cost).
+  returnCost      Decimal?   @db.Decimal(18, 4)
+  dateCreated     DateTime
+  businessDate    DateTime   @db.Date
+
+  rawPayload Json?
+
+  source            MoneySource @default(MELI_API)
+  sourceReferenceId String?
+  syncedAt          DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  payment       Payment?      @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  /// Idempotencia: un mismo refund no se cuenta dos veces aunque llegue por
+  /// webhook y por reconciliación (caso de test obligatorio §41).
+  @@unique([sellerAccountId, externalId])
+  @@index([sellerAccountId, businessDate])
+  @@index([orderId])
+}
+
+model Shipment {
+  id              String  @id @default(cuid())
+  sellerAccountId String
+  orderId         String?
+  mlShipmentId    BigInt
+  packId          BigInt?
+  status          String?
+  substatus       String?
+  logisticType    String?
+  shippingMode    String?
+
+  /// Costo total del envío sin descuentos (costs.gross_amount).
+  grossAmount   Decimal? @db.Decimal(18, 4)
+  /// Costo final a cargo del VENDEDOR (costs.senders[].cost). Este impacta el P&L.
+  senderCost    Decimal? @db.Decimal(18, 4)
+  /// Costo a cargo del comprador (costs.receiver.cost).
+  receiverCost  Decimal? @db.Decimal(18, 4)
+  /// Bonificaciones aplicadas (envío gratis obligatorio, nivel del comprador, etc.).
+  discountsTotal Decimal @default(0) @db.Decimal(18, 4)
+  discountsDetail Json?
+
+  billableWeight Int?
+  dateCreated    DateTime?
+
+  rawPayload Json?
+
+  source            MoneySource @default(MELI_API)
+  sourceReferenceId String?
+  syncedAt          DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@unique([sellerAccountId, mlShipmentId])
+  @@index([orderId])
+  @@index([packId])
+}
+
+/// Línea de cargo normalizada. Es la tabla que hace auditables los KPIs:
+/// "Comisiones este mes: $X" = SUM(amount) WHERE type = SALE_FEE, y cada fila
+/// apunta a la orden y a la fuente que la originó (§35 del brief).
+enum FeeType {
+  SALE_FEE /// Comisión por vender
+  FIXED_FEE /// Cargo fijo por unidad
+  FINANCING_FEE /// Costo de cuotas / financiación
+  SHIPPING_FEE /// Logística a cargo del vendedor
+  MARKETPLACE_FEE /// marketplace_fee del pago
+  ADS_ATTRIBUTED /// Publicidad atribuida a la venta
+  TAX_WITHHELD /// Retención / percepción
+  RETURN_COST /// Costo de devolución
+  OTHER
+}
+
+model MarketplaceFee {
+  id              String      @id @default(cuid())
+  sellerAccountId String
+  orderId         String?
+  type            FeeType
+  amount          Decimal     @db.Decimal(18, 4)
+  currencyId      String      @default("ARS")
+  kind            ValueKind   @default(ACTUAL)
+  source          MoneySource
+  sourceReferenceId String?
+  /// Fecha con la que impacta el P&L.
+  businessDate    DateTime    @db.Date
+  description     String?
+  metadata        Json?
+  syncedAt        DateTime    @default(now())
+  createdAt       DateTime    @default(now())
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  order         Order?        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  /// Idempotencia por (orden, tipo, fuente): reprocesar una orden actualiza,
+  /// no duplica.
+  @@unique([sellerAccountId, orderId, type, source])
+  @@index([sellerAccountId, businessDate, type])
+}
+
+/// Resultado del motor de rentabilidad para una orden, materializado.
+/// Se recalcula cuando cambian sus insumos, pero guarda `calculatedAt` y la
+/// composición para poder explicar el número.
+model OrderProfitability {
+  id      String @id @default(cuid())
+  orderId String @unique
+
+  grossRevenue      Decimal @db.Decimal(18, 4)
+  sellerDiscounts   Decimal @db.Decimal(18, 4)
+  netRevenue        Decimal @db.Decimal(18, 4)
+  refunds           Decimal @db.Decimal(18, 4)
+  cogs              Decimal @db.Decimal(18, 4)
+  meliFees          Decimal @db.Decimal(18, 4)
+  fixedFees         Decimal @db.Decimal(18, 4)
+  financingFees     Decimal @db.Decimal(18, 4)
+  shippingCost      Decimal @db.Decimal(18, 4)
+  adsAttributed     Decimal @db.Decimal(18, 4)
+  taxesWithheld     Decimal @db.Decimal(18, 4)
+  otherCharges      Decimal @db.Decimal(18, 4)
+  contributionMargin Decimal @db.Decimal(18, 4)
+  marginPct         Decimal @db.Decimal(9, 4)
+
+  /// true si algún componente es ESTIMATED: la UI lo muestra con su etiqueta.
+  hasEstimates Boolean @default(false)
+  breakdown    Json
+  calculatedAt DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+// -----------------------------------------------------------------------------
+// Facturación (ML / MP) — conciliación, NO fuente primaria de ventas
+// -----------------------------------------------------------------------------
+
+enum BillingGroup {
+  ML
+  MP
+}
+
+enum BillingDocumentType {
+  BILL
+  CREDIT_NOTE
+}
+
+model BillingPeriod {
+  id              String       @id @default(cuid())
+  sellerAccountId String
+  group           BillingGroup
+  /// Clave del período tal como la usa la API: YYYY-MM-01
+  periodKey       String
+  dateFrom        DateTime?
+  dateTo          DateTime?
+  dueDate         DateTime?
+  status          String?
+  totalAmount     Decimal?     @db.Decimal(18, 4)
+  currencyId      String       @default("ARS")
+  rawPayload      Json?
+
+  source    MoneySource @default(BILLING_REPORT)
+  syncedAt  DateTime    @default(now())
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  sellerAccount SellerAccount    @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  documents     BillingDocument[]
+
+  @@unique([sellerAccountId, group, periodKey])
+  @@index([sellerAccountId, dueDate])
+}
+
+model BillingDocument {
+  id              String              @id @default(cuid())
+  billingPeriodId String
+  documentType    BillingDocumentType
+  externalId      String
+  documentNumber  String?
+  dateIssued      DateTime?
+  dueDate         DateTime?
+  totalAmount     Decimal             @db.Decimal(18, 4)
+  currencyId      String              @default("ARS")
+  paidAmount      Decimal             @default(0) @db.Decimal(18, 4)
+  status          String?
+  rawPayload      Json?
+  syncedAt        DateTime            @default(now())
+  createdAt       DateTime            @default(now())
+
+  billingPeriod BillingPeriod  @relation(fields: [billingPeriodId], references: [id], onDelete: Cascade)
+  charges       BillingCharge[]
+
+  @@unique([billingPeriodId, externalId])
+}
+
+model BillingCharge {
+  id                String   @id @default(cuid())
+  billingDocumentId String
+  conceptCode       String?
+  concept           String
+  detail            String?
+  amount            Decimal  @db.Decimal(18, 4)
+  currencyId        String   @default("ARS")
+  /// Cargo negativo = bonificación.
+  isBonus           Boolean  @default(false)
+  /// Cruce con la venta cuando la API lo permite.
+  relatedOrderId    BigInt?
+  relatedItemId     String?
+  rawPayload        Json?
+  createdAt         DateTime @default(now())
+
+  billingDocument BillingDocument @relation(fields: [billingDocumentId], references: [id], onDelete: Cascade)
+
+  @@index([billingDocumentId])
+  @@index([relatedOrderId])
+}
+
+// -----------------------------------------------------------------------------
+// Mercado Pago — movimientos de dinero
+// -----------------------------------------------------------------------------
+
+enum MpRecordType {
+  INITIAL_AVAILABLE_BALANCE
+  RELEASE
+  TOTAL
+  AVAILABLE_BALANCE
+  MOVEMENT
+  UNKNOWN
+}
+
+/// Una fila del reporte de liberaciones / todas las transacciones, o un movimiento
+/// reconstruido desde /v1/payments. Es la base del "Saldo conciliado".
+model MercadoPagoMovement {
+  id              String       @id @default(cuid())
+  sellerAccountId String
+  paymentId       String?
+  /// SOURCE_ID del reporte (cruza con payment.id).
+  sourceId        String
+  externalId      String
+  recordType      MpRecordType @default(MOVEMENT)
+  description     String?
+
+  /// DATE del reporte: fecha en que el dinero se libera / impacta el saldo.
+  date            DateTime
+  businessDate    DateTime     @db.Date
+  transactionApprovalDate DateTime?
+
+  grossAmount          Decimal? @db.Decimal(18, 4)
+  netCreditAmount      Decimal  @default(0) @db.Decimal(18, 4)
+  netDebitAmount       Decimal  @default(0) @db.Decimal(18, 4)
+  settlementNetAmount  Decimal? @db.Decimal(18, 4)
+  /// BALANCE_AMOUNT: saldo remanente informado por Mercado Pago.
+  balanceAmount        Decimal? @db.Decimal(18, 4)
+  mpFeeAmount          Decimal  @default(0) @db.Decimal(18, 4)
+  financingFeeAmount   Decimal  @default(0) @db.Decimal(18, 4)
+  shippingFeeAmount    Decimal  @default(0) @db.Decimal(18, 4)
+  effectiveCouponAmount Decimal @default(0) @db.Decimal(18, 4)
+  taxesAmount          Decimal  @default(0) @db.Decimal(18, 4)
+  taxDetail            String?
+  taxesDisaggregated   Json?
+
+  currencyId  String  @default("ARS")
+  mlOrderId   BigInt?
+  mlShippingId BigInt?
+  mlPackId    BigInt?
+  mlItemId    String?
+  installments Int?
+  paymentMethod String?
+
+  rawPayload Json?
+
+  source            MoneySource @default(BILLING_REPORT)
+  sourceReferenceId String?
+  syncedAt          DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  payment       Payment?      @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([sellerAccountId, externalId])
+  @@index([sellerAccountId, businessDate])
+  @@index([sellerAccountId, recordType, date])
+  @@index([mlOrderId])
+}
+
+/// Instantánea del saldo reconstruido. Se guarda cada vez que se concilia para
+/// poder mostrar "última sincronización" y auditar la evolución.
+model MercadoPagoBalanceSnapshot {
+  id              String   @id @default(cuid())
+  sellerAccountId String
+  /// Disponible según el último BALANCE_AMOUNT conciliado.
+  available       Decimal  @db.Decimal(18, 4)
+  /// Suma de pagos aprobados con money_release_date futuro.
+  pendingRelease  Decimal  @db.Decimal(18, 4)
+  /// Reservas y obligaciones: concepto propio de NUVELA, no de Mercado Pago.
+  committed       Decimal  @db.Decimal(18, 4)
+  currencyId      String   @default("ARS")
+  /// Hasta qué fecha llega la conciliación (define la confiabilidad del número).
+  reconciledUntil DateTime
+  /// Siempre BILLING_REPORT o CALCULATED. Nunca existe un "saldo API en vivo".
+  source          MoneySource @default(CALCULATED)
+  createdAt       DateTime @default(now())
+
+  @@index([sellerAccountId, createdAt])
+}
+
+// -----------------------------------------------------------------------------
+// Publicidad — Product Ads
+// -----------------------------------------------------------------------------
+
+model AdCampaign {
+  id              String   @id @default(cuid())
+  sellerAccountId String
+  mlCampaignId    BigInt
+  name            String
+  status          String?
+  strategy        String?
+  budget          Decimal? @db.Decimal(18, 4)
+  acosTarget      Decimal? @db.Decimal(9, 4)
+  channel         String?
+  dateCreated     DateTime?
+  syncedAt        DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  adGroups      AdGroup[]
+  metrics       AdMetricDaily[]
+
+  @@unique([sellerAccountId, mlCampaignId])
+}
+
+/// Product Ads de Mercado Libre no expone hoy un nivel "ad group" propio; el modelo
+/// existe para no tener que migrar cuando lo exponga y para agrupar manualmente.
+model AdGroup {
+  id           String   @id @default(cuid())
+  adCampaignId String
+  externalId   String?
+  name         String
+  status       String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  adCampaign AdCampaign      @relation(fields: [adCampaignId], references: [id], onDelete: Cascade)
+  metrics    AdMetricDaily[]
+
+  @@unique([adCampaignId, name])
+}
+
+/// Métricas diarias persistidas. IMPRESCINDIBLE: la API solo devuelve 90 días
+/// hacia atrás (research §7.2); esta tabla es nuestro histórico real.
+model AdMetricDaily {
+  id              String   @id @default(cuid())
+  sellerAccountId String
+  adCampaignId    String?
+  adGroupId       String?
+  /// Nivel de la métrica: CAMPAIGN o ITEM.
+  level           String
+  mlItemId        String?
+  date            DateTime @db.Date
+
+  cost        Decimal @default(0) @db.Decimal(18, 4)
+  clicks      Int     @default(0)
+  impressions Int     @default(0)
+  cpc         Decimal @default(0) @db.Decimal(18, 4)
+  ctr         Decimal @default(0) @db.Decimal(9, 6)
+  cvr         Decimal @default(0) @db.Decimal(9, 6)
+
+  directUnits    Int     @default(0)
+  indirectUnits  Int     @default(0)
+  totalUnits     Int     @default(0)
+  directAmount   Decimal @default(0) @db.Decimal(18, 4)
+  indirectAmount Decimal @default(0) @db.Decimal(18, 4)
+  totalAmount    Decimal @default(0) @db.Decimal(18, 4)
+
+  organicUnits  Int      @default(0)
+  organicAmount Decimal  @default(0) @db.Decimal(18, 4)
+
+  roas Decimal? @db.Decimal(12, 6)
+  acos Decimal? @db.Decimal(12, 6)
+
+  rawPayload Json?
+
+  source   MoneySource @default(MELI_API)
+  syncedAt DateTime    @default(now())
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  adCampaign    AdCampaign?   @relation(fields: [adCampaignId], references: [id], onDelete: Cascade)
+  adGroup       AdGroup?      @relation(fields: [adGroupId], references: [id], onDelete: SetNull)
+
+  /// Un registro por (cuenta, nivel, entidad, día): reimportar actualiza, no duplica.
+  @@unique([sellerAccountId, level, adCampaignId, mlItemId, date])
+  @@index([sellerAccountId, date])
+  @@index([mlItemId, date])
+}
+
+// -----------------------------------------------------------------------------
+// Catálogo propio, stock y costeo
+// -----------------------------------------------------------------------------
+
+model Product {
+  id          String   @id @default(cuid())
+  name        String
+  brand       String?
+  description String?
+  category    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  skus Sku[]
+}
+
+enum CostingMethod {
+  WEIGHTED_AVERAGE
+  FIFO
+}
+
+/// Unidad de costeo y de stock. Todo el COGS cuelga de acá.
+model Sku {
+  id        String @id @default(cuid())
+  productId String
+  /// Código interno del vendedor. Es la clave de negocio.
+  code      String @unique
+  name      String
+  barcode   String?
+  /// Peso facturable en gramos, necesario para simular costos con listing_prices.
+  billableWeightGrams Int?
+  active    Boolean @default(true)
+
+  costingMethod CostingMethod @default(WEIGHTED_AVERAGE)
+
+  /// Estado de costeo VIGENTE. El histórico vive en CostHistory y no se pisa.
+  currentStock       Decimal @default(0) @db.Decimal(18, 4)
+  currentAverageCost Decimal @default(0) @db.Decimal(18, 4)
+  currentStockValue  Decimal @default(0) @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product            Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderItems         OrderItem[]
+  purchaseItems      PurchaseItem[]
+  costHistory        CostHistory[]
+  inventoryMovements InventoryMovement[]
+  listingMappings    ListingMapping[]
+
+  @@index([productId])
+  @@index([active])
+}
+
+/// Relación publicación de Mercado Libre ↔ SKU interno, por cuenta.
+/// Sin esto no se puede atribuir COGS a una venta.
+model ListingMapping {
+  id              String  @id @default(cuid())
+  sellerAccountId String
+  skuId           String
+  mlItemId        String
+  variationId     String?
+  /// Unidades de SKU que consume una unidad vendida de la publicación (kits, packs).
+  unitsPerListing Decimal @default(1) @db.Decimal(18, 4)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+  sku           Sku           @relation(fields: [skuId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerAccountId, mlItemId, variationId])
+  @@index([skuId])
+}
+
+enum InventoryMovementType {
+  PURCHASE
+  SALE
+  RETURN
+  ADJUSTMENT
+  INITIAL
+}
+
+/// Trazabilidad completa del stock y del costo promedio: cada movimiento guarda
+/// el estado ANTES y DESPUÉS. Permite reconstruir el costo de cualquier fecha.
+model InventoryMovement {
+  id              String                @id @default(cuid())
+  sellerAccountId String?
+  skuId           String
+  type            InventoryMovementType
+  date            DateTime
+  businessDate    DateTime              @db.Date
+
+  quantity  Decimal @db.Decimal(18, 4)
+  unitCost  Decimal @db.Decimal(18, 4)
+  totalCost Decimal @db.Decimal(18, 4)
+
+  stockBefore     Decimal @db.Decimal(18, 4)
+  stockAfter      Decimal @db.Decimal(18, 4)
+  avgCostBefore   Decimal @db.Decimal(18, 4)
+  avgCostAfter    Decimal @db.Decimal(18, 4)
+  stockValueBefore Decimal @db.Decimal(18, 4)
+  stockValueAfter  Decimal @db.Decimal(18, 4)
+
+  /// Origen del movimiento (purchaseItemId, orderItemId, …).
+  referenceType String?
+  referenceId   String?
+  notes         String?
+
+  source    MoneySource @default(MANUAL)
+  createdAt DateTime    @default(now())
+
+  sku           Sku            @relation(fields: [skuId], references: [id], onDelete: Cascade)
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+
+  /// Idempotencia: un mismo origen no genera dos movimientos.
+  @@unique([referenceType, referenceId])
+  @@index([skuId, date])
+  @@index([businessDate])
+}
+
+/// Histórico de costo por SKU. NUNCA se borra ni se pisa: responde
+/// "¿cuánto costaba este producto en tal fecha?" (§13 del brief).
+model CostHistory {
+  id       String   @id @default(cuid())
+  skuId    String
+  /// Vigencia del costo.
+  validFrom DateTime
+  validTo   DateTime?
+  unitCost  Decimal  @db.Decimal(18, 4)
+  averageCost Decimal @db.Decimal(18, 4)
+  method   CostingMethod @default(WEIGHTED_AVERAGE)
+  referenceType String?
+  referenceId   String?
+  source   MoneySource @default(MANUAL)
+  createdAt DateTime @default(now())
+
+  sku Sku @relation(fields: [skuId], references: [id], onDelete: Cascade)
+
+  @@index([skuId, validFrom])
+}
+
+model Purchase {
+  id              String   @id @default(cuid())
+  sellerAccountId String?
+  supplier        String
+  date            DateTime
+  businessDate    DateTime @db.Date
+  invoiceNumber   String?
+  total           Decimal  @db.Decimal(18, 4)
+  currencyId      String   @default("ARS")
+  paymentMethod   String?
+  /// Cuándo sale la plata (puede diferir de la fecha de compra: cuenta corriente).
+  paymentDueDate  DateTime?
+  paid            Boolean  @default(false)
+  notes           String?
+
+  source    MoneySource @default(MANUAL)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+  items         PurchaseItem[]
+
+  @@index([businessDate])
+  @@index([supplier])
+}
+
+model PurchaseItem {
+  id         String  @id @default(cuid())
+  purchaseId String
+  skuId      String
+  quantity   Decimal @db.Decimal(18, 4)
+  unitCost   Decimal @db.Decimal(18, 4)
+  totalCost  Decimal @db.Decimal(18, 4)
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  purchase Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  sku      Sku      @relation(fields: [skuId], references: [id], onDelete: Restrict)
+
+  @@index([purchaseId])
+  @@index([skuId])
+}
+
+// -----------------------------------------------------------------------------
+// Egresos e ingresos manuales
+// -----------------------------------------------------------------------------
+
+enum EntryDirection {
+  EXPENSE
+  INCOME
+}
+
+/// Categorías configurables: agregar una categoría NUNCA requiere tocar código.
+model TransactionCategory {
+  id        String         @id @default(cuid())
+  direction EntryDirection
+  name      String
+  parentId  String?
+  /// Las de sistema se crean en el seed y no se pueden borrar, solo desactivar.
+  isSystem  Boolean        @default(false)
+  active    Boolean        @default(true)
+  createdAt DateTime       @default(now())
+
+  parent   TransactionCategory?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children TransactionCategory[] @relation("CategoryTree")
+  expenses Expense[]
+  incomes  Income[]
+
+  @@unique([direction, name, parentId])
+}
+
+enum RecurrenceInterval {
+  NONE
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+model Expense {
+  id              String   @id @default(cuid())
+  sellerAccountId String?
+  date            DateTime
+  businessDate    DateTime @db.Date
+  amount          Decimal  @db.Decimal(18, 4)
+  currencyId      String   @default("ARS")
+  categoryId      String
+  subcategory     String?
+  supplier        String?
+  paymentMethod   String?
+  recurrent       Boolean  @default(false)
+  recurrence      RecurrenceInterval @default(NONE)
+  notes           String?
+  attachmentUrl   String?
+
+  source    MoneySource @default(MANUAL)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  sellerAccount SellerAccount?      @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+  category      TransactionCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+  @@index([categoryId])
+}
+
+/// Ingresos que NO provienen de Mercado Libre. Nunca se suman al GMV (§17 del brief).
+model Income {
+  id              String   @id @default(cuid())
+  sellerAccountId String?
+  date            DateTime
+  businessDate    DateTime @db.Date
+  amount          Decimal  @db.Decimal(18, 4)
+  currencyId      String   @default("ARS")
+  categoryId      String
+  description     String?
+  recurrent       Boolean  @default(false)
+  recurrence      RecurrenceInterval @default(NONE)
+  notes           String?
+
+  source    MoneySource @default(MANUAL)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  sellerAccount SellerAccount?      @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+  category      TransactionCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+
+  @@index([businessDate])
+}
+
+// -----------------------------------------------------------------------------
+// Obligaciones, reservas y cashflow
+// -----------------------------------------------------------------------------
+
+enum ObligationStatus {
+  UPCOMING /// Próxima
+  PARTIALLY_RESERVED /// Parcialmente reservada
+  COVERED /// Cubierta
+  PAID /// Pagada
+  OVERDUE /// Vencida
+}
+
+enum ObligationPriority {
+  CRITICAL
+  HIGH
+  NORMAL
+  LOW
+}
+
+model Obligation {
+  id              String             @id @default(cuid())
+  sellerAccountId String?
+  description     String
+  amount          Decimal            @db.Decimal(18, 4)
+  currencyId      String             @default("ARS")
+  dueDate         DateTime           @db.Date
+  category        String
+  priority        ObligationPriority @default(NORMAL)
+  recurrent       Boolean            @default(false)
+  recurrence      RecurrenceInterval @default(NONE)
+  /// Cuotas: total y cuál es esta.
+  installmentsTotal   Int?
+  installmentNumber   Int?
+  status          ObligationStatus   @default(UPCOMING)
+  reservedAmount  Decimal            @default(0) @db.Decimal(18, 4)
+  paidAmount      Decimal            @default(0) @db.Decimal(18, 4)
+  /// Vínculo opcional con una factura de ML/MP.
+  billingDocumentId String?
+  notes           String?
+
+  source    MoneySource @default(MANUAL)
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  sellerAccount SellerAccount?      @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+  payments      ObligationPayment[]
+  reserves      Reserve[]
+
+  @@index([dueDate, status])
+  @@index([sellerAccountId, dueDate])
+}
+
+model ObligationPayment {
+  id           String   @id @default(cuid())
+  obligationId String
+  date         DateTime
+  businessDate DateTime @db.Date
+  amount       Decimal  @db.Decimal(18, 4)
+  method       String?
+  notes        String?
+  createdAt    DateTime @default(now())
+
+  obligation Obligation @relation(fields: [obligationId], references: [id], onDelete: Cascade)
+
+  @@index([obligationId])
+  @@index([businessDate])
+}
+
+enum ReserveType {
+  INVENTORY_REPLACEMENT /// Fondo de reposición de mercadería
+  TAX /// Reserva impositiva
+  OBLIGATION /// Reserva atada a una obligación puntual
+  SAFETY_BUFFER /// Colchón mínimo
+  CUSTOM
+}
+
+/// "Bolsillos": dinero que existe en la cuenta pero NO está libre (§19 del brief).
+model Reserve {
+  id              String      @id @default(cuid())
+  sellerAccountId String?
+  type            ReserveType
+  name            String
+  /// Monto objetivo a reservar.
+  targetAmount    Decimal     @db.Decimal(18, 4)
+  /// Monto efectivamente reservado hasta hoy.
+  currentAmount   Decimal     @default(0) @db.Decimal(18, 4)
+  currencyId      String      @default("ARS")
+  obligationId    String?
+  /// Orden de prelación en la asignación del dinero (§21 del brief).
+  /// Menor número = se cubre primero. Configurable sin tocar código.
+  priority        Int         @default(100)
+  active          Boolean     @default(true)
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+  obligation    Obligation?    @relation(fields: [obligationId], references: [id], onDelete: SetNull)
+
+  @@index([sellerAccountId, active])
+}
+
+enum CashflowKind {
+  REAL /// Ya ocurrió
+  SCHEDULED /// Programado con fecha y monto ciertos
+  ESTIMATED /// Estimado a partir de datos conocidos
+  FORECAST /// Proyectado estadísticamente
+}
+
+enum CashflowDirection {
+  IN
+  OUT
+}
+
+/// Línea de cashflow: CUÁNDO entra o sale la plata. Nunca se mezcla con P&L.
+model CashflowEntry {
+  id              String            @id @default(cuid())
+  sellerAccountId String?
+  date            DateTime          @db.Date
+  direction       CashflowDirection
+  kind            CashflowKind
+  category        String
+  amount          Decimal           @db.Decimal(18, 4)
+  currencyId      String            @default("ARS")
+  description     String?
+  referenceType   String?
+  referenceId     String?
+
+  source    MoneySource @default(CALCULATED)
+  createdAt DateTime    @default(now())
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+
+  @@unique([referenceType, referenceId, direction])
+  @@index([sellerAccountId, date])
+  @@index([date, kind])
+}
+
+enum ForecastScenario {
+  CONSERVATIVE
+  BASE
+  OPTIMISTIC
+}
+
+model Forecast {
+  id              String           @id @default(cuid())
+  sellerAccountId String?
+  scenario        ForecastScenario
+  horizonDays     Int
+  generatedAt     DateTime         @default(now())
+  /// Nombre del modelo usado, para poder comparar versiones.
+  model           String
+  /// ALTA / MEDIA / BAJA, derivada de la cantidad y dispersión de los datos.
+  confidence      String
+  /// Serie proyectada día a día + supuestos, para poder explicar el número.
+  payload         Json
+  assumptions     Json?
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+
+  @@index([sellerAccountId, generatedAt])
+}
+
+// -----------------------------------------------------------------------------
+// Conciliación
+// -----------------------------------------------------------------------------
+
+enum ReconciliationIssueType {
+  ORDER_WITHOUT_PAYMENT
+  PAYMENT_WITHOUT_ORDER
+  CHARGE_WITHOUT_SALE
+  MOVEMENT_UNIDENTIFIED
+  AMOUNT_MISMATCH
+  MISSING_SHIPMENT_COST
+  REFUND_MISMATCH
+  CHARGEBACK
+  BONUS_UNEXPECTED
+  ADJUSTMENT
+  DUPLICATE_SUSPECTED
+}
+
+enum ReconciliationIssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  IGNORED
+}
+
+/// Ninguna diferencia se borra en silencio (§34 del brief): se registra acá.
+model ReconciliationIssue {
+  id              String                    @id @default(cuid())
+  sellerAccountId String
+  type            ReconciliationIssueType
+  status          ReconciliationIssueStatus @default(OPEN)
+  severity        String                    @default("MEDIUM")
+  businessDate    DateTime                  @db.Date
+  expectedAmount  Decimal?                  @db.Decimal(18, 4)
+  actualAmount    Decimal?                  @db.Decimal(18, 4)
+  difference      Decimal?                  @db.Decimal(18, 4)
+  currencyId      String                    @default("ARS")
+  description     String
+  /// Punteros a las entidades comparadas, para poder abrir el detalle.
+  context         Json
+  /// Clave estable para no crear el mismo issue en cada corrida.
+  fingerprint     String
+  resolutionNotes String?
+  resolvedAt      DateTime?
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerAccountId, fingerprint])
+  @@index([sellerAccountId, status, businessDate])
+}
+
+// -----------------------------------------------------------------------------
+// Reglas comerciales y perfil fiscal — TODO configurable, nada hardcodeado
+// -----------------------------------------------------------------------------
+
+enum CommercialRuleType {
+  SALE_FEE_PERCENTAGE
+  FIXED_FEE_THRESHOLD
+  FREE_SHIPPING_THRESHOLD
+  FINANCING_COST
+  SHIPPING_COST_TABLE
+  OTHER
+}
+
+/// Reglas versionadas por vigencia. Cambiar un porcentaje NUNCA implica tocar
+/// código ni redeploy (§8 del brief).
+model CommercialRule {
+  id        String             @id @default(cuid())
+  siteId    String             @default("MLA")
+  ruleType  CommercialRuleType
+  name      String
+  validFrom DateTime           @db.Date
+  validTo   DateTime?          @db.Date
+  /// Estructura libre según ruleType. Validada con Zod al leerse.
+  values    Json
+  /// De dónde salió la regla: URL oficial, resolución, o "carga manual".
+  source    String
+  notes     String?
+  active    Boolean            @default(true)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([siteId, ruleType, validFrom])
+}
+
+enum TaxCondition {
+  RESPONSABLE_INSCRIPTO
+  MONOTRIBUTO
+  EXENTO
+  CONSUMIDOR_FINAL
+  OTRO
+}
+
+/// Cómo tratar cada impuesto. El sistema NO decide por su cuenta que una
+/// retención es una pérdida (§9 del brief).
+enum TaxTreatment {
+  FISCAL_CREDIT /// Crédito fiscal: NO es costo, es un activo a recuperar
+  COST /// Costo económico definitivo
+  CASH_MOVEMENT_ONLY /// Solo mueve caja, no afecta resultado
+  LIABILITY /// Genera deuda fiscal
+}
+
+model FiscalProfile {
+  id              String       @id @default(cuid())
+  sellerAccountId String
+  condition       TaxCondition
+  cuit            String?
+  province        String
+  iibbStatus      String?
+  sirtacStatus    String?
+  /// Alícuotas configurables por concepto. Nunca hardcodeadas en el código.
+  rates           Json
+  /// Tratamiento por tipo de impuesto: { "IVA_RETENCION": "FISCAL_CREDIT", ... }
+  treatments      Json
+  validFrom       DateTime     @db.Date
+  validTo         DateTime?    @db.Date
+  notes           String?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+
+  @@index([sellerAccountId, validFrom])
+}
+
+/// Parámetros operativos del negocio, editables desde Configuración.
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// Sincronización y auditoría
+// -----------------------------------------------------------------------------
+
+enum SyncJobType {
+  ORDERS_INCREMENTAL
+  ORDERS_BACKFILL
+  ORDER_DETAIL
+  SHIPMENTS
+  PAYMENTS
+  REFUNDS
+  ADS_DAILY
+  BILLING
+  MP_MOVEMENTS
+  MP_REPORT
+  MISSED_FEEDS
+  RECONCILIATION
+  COSTING
+}
+
+enum SyncJobStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  PARTIAL
+  FAILED
+}
+
+/// Auditoría de cada corrida de sincronización. Alimenta el panel
+/// "Sincronizado hace N min" y el diagnóstico de rate limits.
+model SyncJob {
+  id              String        @id @default(cuid())
+  sellerAccountId String?
+  type            SyncJobType
+  status          SyncJobStatus @default(PENDING)
+  startedAt       DateTime      @default(now())
+  finishedAt      DateTime?
+  /// Ventana sincronizada.
+  windowFrom      DateTime?
+  windowTo        DateTime?
+  itemsRead       Int           @default(0)
+  itemsWritten    Int           @default(0)
+  itemsSkipped    Int           @default(0)
+  /// Cantidad de 429 recibidos: evidencia para calibrar ML_RATE_LIMIT_RPM.
+  rateLimitHits   Int           @default(0)
+  /// Mensaje seguro para mostrar al usuario (nunca stack traces ni tokens).
+  errorMessage    String?
+  errorDetail     Json?
+  createdAt       DateTime      @default(now())
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+
+  @@index([sellerAccountId, type, startedAt])
+  @@index([status])
+}
+
+/// Cursor incremental por (cuenta, tipo). Permite reanudar sin re-leer todo.
+model SyncCursor {
+  id              String      @id @default(cuid())
+  sellerAccountId String
+  type            SyncJobType
+  /// Última fecha de modificación procesada (marca de agua).
+  lastWatermark   DateTime?
+  lastSuccessAt   DateTime?
+  cursorData      Json?
+  updatedAt       DateTime    @updatedAt
+
+  sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerAccountId, type])
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+/// Cola de notificaciones. El endpoint solo inserta acá y responde 200 en < 500 ms
+/// (requisito de Mercado Libre, research §8.2). El procesamiento es asíncrono.
+model WebhookEvent {
+  id              String        @id @default(cuid())
+  sellerAccountId String?
+  provider        Provider      @default(MERCADO_LIBRE)
+  topic           String
+  resource        String
+  mlUserId        BigInt?
+  applicationId   BigInt?
+  attempts        Int           @default(0)
+  processAttempts Int           @default(0)
+  sentAt          DateTime?
+  receivedAt      DateTime      @default(now())
+  processedAt     DateTime?
+  status          WebhookStatus @default(RECEIVED)
+  errorMessage    String?
+  payload         Json
+
+  sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
+
+  /// Idempotencia de webhooks: la misma notificación (mismo recurso, mismo envío)
+  /// no se procesa dos veces (caso de test obligatorio §41 del brief).
+  @@unique([provider, topic, resource, sentAt])
+  @@index([status, receivedAt])
+  @@index([sellerAccountId, topic])
+}

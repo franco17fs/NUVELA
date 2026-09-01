@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nuvela-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nuvela
+      POSTGRES_PASSWORD: nuvela
+      POSTGRES_DB: nuvela
+      # Argentina no usa DST; fijamos el TZ del server para que los cortes
+      # diarios/quincenales del negocio coincidan con los del motor financiero.
+      TZ: America/Argentina/Buenos_Aires
+      PGTZ: America/Argentina/Buenos_Aires
+    ports:
+      - "5432:5432"
+    volumes:
+      - nuvela-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nuvela -d nuvela"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  nuvela-pgdata:
