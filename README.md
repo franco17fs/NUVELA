@@ -70,9 +70,21 @@ npm run dev
 
 En `http://localhost:3000/configuracion` se conectan las cuentas.
 
-### Lo que hay que cargar a mano
+### Guías paso a paso
 
-Estas credenciales las genera el usuario; el sistema no puede obtenerlas:
+Crear las aplicaciones de Mercado Libre y Mercado Pago tiene varios detalles que
+conviene no adivinar: el redirect URI exige HTTPS, los scopes hay que elegirlos
+bien y el orden de carga inicial afecta el resultado. Está todo en
+**[`docs/setup/`](docs/setup/README.md)**:
+
+| | Guía |
+|---|---|
+| 1 | [Crear la aplicación en Mercado Libre](docs/setup/01-aplicacion-mercado-libre.md) |
+| 2 | [Crear la aplicación en Mercado Pago](docs/setup/02-aplicacion-mercado-pago.md) |
+| 3 | [Redirect URI y webhooks](docs/setup/03-redirect-uri-y-webhooks.md) |
+| 4 | [Primera sincronización](docs/setup/04-primera-sincronizacion.md) |
+
+Las credenciales las genera el usuario; el sistema no puede obtenerlas:
 
 | Variable | Dónde se obtiene |
 |---|---|
@@ -82,7 +94,8 @@ Estas credenciales las genera el usuario; el sistema no puede obtenerlas:
 | `ML_WEBHOOK_SECRET` / `CRON_SECRET` | Cualquier cadena aleatoria larga |
 
 El `redirect_uri` registrado en la aplicación de Mercado Libre tiene que
-coincidir **exactamente** con `ML_REDIRECT_URI`.
+coincidir **exactamente** con `ML_REDIRECT_URI`, y **debe ser HTTPS**:
+`localhost` no se puede cargar. La guía 3 explica las alternativas.
 
 ### Sincronización
 
@@ -140,6 +153,7 @@ por webhook y refund recibido dos veces.
 
 | Documento | Qué contiene |
 |---|---|
+| [`docs/setup/`](docs/setup/README.md) | **Puesta en marcha paso a paso**: crear las aplicaciones, redirect URI, webhooks y primera sincronización |
 | [`docs/mercadolibre-api-research.md`](docs/mercadolibre-api-research.md) | **Investigación de las APIs oficiales**: cada endpoint verificado, sus límites, y qué NO se puede automatizar |
 | [`docs/architecture.md`](docs/architecture.md) | Capas, decisiones y qué falta |
 | [`docs/financial-model.md`](docs/financial-model.md) | **Todas las fórmulas**, con sus supuestos |
