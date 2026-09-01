@@ -100,6 +100,15 @@ refresh_token=$REFRESH_TOKEN
 > (`SELECT ... FOR UPDATE` sobre `OAuthToken`) — ver `docs/sync-strategy.md`.
 
 **Scopes usados por NUVELA:** `offline_access read`.
+
+> **Permisos funcionales.** Además del `scope` del flujo, el DevCenter pide
+> configurar *permisos funcionales* por área
+> (<https://developers.mercadolibre.com.ar/es_ar/permisos-funcionales>), donde
+> "Solo lectura" habilita únicamente métodos `GET`. NUVELA necesita en sólo
+> lectura: **Usuarios** (`users`), **Publicación y sincronización** (`items` y
+> `listing_prices`), **Publicidad** (`advertising`), **Facturación**
+> (`billing`) y **Venta y envíos** (`orders`, `shipments`, `claims`, `returns`,
+> pagos y packs). El resto queda en "Sin acceso".
 No pedimos `write`: la aplicación es de lectura financiera y no modifica publicaciones,
 precios ni envíos. Esto reduce el daño posible ante una fuga de token.
 

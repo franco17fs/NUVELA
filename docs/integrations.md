@@ -24,7 +24,14 @@ Base: `https://api.mercadolibre.com`
 | POST | `/oauth/token` | `authorization_code` y `refresh_token` | Access token 6 h. **Refresh token de un solo uso** |
 | GET | `/users/me` | Identificar la cuenta conectada | |
 
-Scopes: `offline_access read`. No se pide `write`: la aplicación sólo lee.
+Scopes del flujo: `offline_access read`. No se pide `write`: la aplicación sólo lee.
+
+> Son dos capas distintas y conviven. El **scope** viaja en la URL de
+> autorización y define qué pide el flujo; los **permisos funcionales** se
+> configuran una vez en el DevCenter y definen a qué recursos puede acceder la
+> aplicación (`orders`, `items`, `advertising`, `billing`…). Los dos tienen que
+> estar en sólo lectura. El detalle de cuál marcar está en
+> [`setup/01-aplicacion-mercado-libre.md`](./setup/01-aplicacion-mercado-libre.md).
 
 ### Ventas · `orders.ts`, `shipments.ts`
 

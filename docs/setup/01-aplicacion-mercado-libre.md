@@ -76,28 +76,52 @@ El más fácil de pasar por alto es **Refresh Token**, que viene desmarcado por
 defecto. Todo el mecanismo de renovación automática —incluido el lock que
 serializa el refresh, porque el token es de un solo uso— depende de ese flujo.
 
-### Scopes
+### Negocios
 
-Marcá:
+✅ **Mercado Libre**
 
-- ✅ `read`
-- ✅ `offline_access`
-- ❌ `write` — **no lo marques**
+**VIS** es Vehículos, Inmuebles y Servicios. No aplica a un vendedor de
+productos: dejalo sin marcar.
 
-NUVELA sólo lee. Sin `write`, una fuga de token no puede modificar tus
-publicaciones, precios ni envíos. `offline_access` es lo que habilita el
-`refresh_token`, sin el cual habría que reconectar cada 6 horas.
+### Permisos
 
-### Topics de notificaciones
+El DevCenter usa **permisos funcionales**: un desplegable por área, con tres
+valores. Según la
+[documentación oficial](https://developers.mercadolibre.com.ar/es_ar/permisos-funcionales):
 
-| Topic | Para qué |
+- **Solo lectura** → habilita únicamente métodos `GET`
+- **Lectura y escritura** → habilita además `PUT`, `POST` y `DELETE`
+
+**Ninguno va en escritura.** NUVELA sólo lee.
+
+| Permiso | Valor | Recursos que habilita y por qué se necesita |
+|---|---|---|
+| **Usuarios** | Solo lectura | `users`. Es el que identifica la cuenta al conectarla. Viene por defecto en *Lectura y escritura*: **bajalo** |
+| Comunicaciones pre y post ventas | Sin acceso | Mensajería. No se usa |
+| **Publicación y sincronización** | Solo lectura | `items`, `prices` y **Costos por vender** (`listing_prices`), que es el simulador de comisiones |
+| **Publicidad de un producto** | Solo lectura | `advertising` → Product Ads |
+| **Facturación de una venta** | Solo lectura | `invoices`, `billing`, períodos, percepciones y conciliaciones |
+| Métricas del negocio | Sin acceso | Da `trends`, `highlights` y visitas. NUVELA no los usa |
+| Promociones, cupones y descuentos | Sin acceso | Da `offers` y `deals`. No se usan; los descuentos de una orden vienen con el permiso de ventas |
+| **Venta y envíos de un producto** | Solo lectura | **El imprescindible**: `orders`, `shipments`, `claims`, `returns`, Pagos, Packs y Costos de envío |
+
+Los cuatro en negrita son los que el sistema consume de verdad. Sin *Venta y
+envíos* no se importa ninguna venta.
+
+> El formulario avisa *"Selecciona al menos una opción para cada permiso"*:
+> los que no usás quedan explícitamente en **Sin acceso**, no vacíos.
+
+### Tópicos de notificaciones
+
+Están en acordeones, agrupados por familia. Abrí y marcá:
+
+| Acordeón | Qué marcar |
 |---|---|
-| `orders_v2` | Ventas — el recomendado por Mercado Libre |
-| `shipments` | Cambios de envío |
-| `payments` | Cambios de estado de cobro |
-| `invoices` | Facturación |
-| `post_purchase` | Reclamos, devoluciones y cambios |
-| `items` | Cambios de publicación |
+| **Orders** | `orders_v2` — el recomendado por Mercado Libre |
+| **Shipments** | `shipments` |
+| **Items** | `items` |
+| **Post Purchase** | reclamos, devoluciones y cambios |
+| **Others** | `payments` e `invoices` |
 
 ### URL de notificaciones
 
