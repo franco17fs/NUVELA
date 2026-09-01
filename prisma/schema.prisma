@@ -134,6 +134,9 @@ model OAuthFlowState {
   state        String   @unique
   codeVerifier String
   provider     Provider
+  /// Cuenta a la que se va a vincular la conexión. Se usa al conectar Mercado
+  /// Pago sobre una cuenta de Mercado Libre ya existente.
+  sellerAccountId String?
   redirectTo   String?
   expiresAt    DateTime
   createdAt    DateTime @default(now())
@@ -434,6 +437,13 @@ model MarketplaceFee {
   id              String      @id @default(cuid())
   sellerAccountId String
   orderId         String?
+  /// Clave de deduplicación calculada por la aplicación.
+  ///
+  /// No se usa un índice compuesto sobre (orderId, type, source) porque
+  /// `orderId` es opcional y en PostgreSQL un índice único NO deduplica filas
+  /// con NULL: dos cargos sin orden se insertarían dos veces sin que la base
+  /// dijera nada. Con una clave de texto siempre presente, la garantía es real.
+  dedupeKey       String
   type            FeeType
   amount          Decimal     @db.Decimal(18, 4)
   currencyId      String      @default("ARS")
@@ -450,10 +460,10 @@ model MarketplaceFee {
   sellerAccount SellerAccount @relation(fields: [sellerAccountId], references: [id], onDelete: Cascade)
   order         Order?        @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  /// Idempotencia por (orden, tipo, fuente): reprocesar una orden actualiza,
-  /// no duplica.
-  @@unique([sellerAccountId, orderId, type, source])
+  /// Idempotencia real: reprocesar una orden actualiza, no duplica.
+  @@unique([sellerAccountId, dedupeKey])
   @@index([sellerAccountId, businessDate, type])
+  @@index([orderId])
 }
 
 /// Resultado del motor de rentabilidad para una orden, materializado.
@@ -713,6 +723,10 @@ model AdMetricDaily {
   level           String
   mlItemId        String?
   date            DateTime @db.Date
+  /// `${level}:${entityId}:${YYYY-MM-DD}`. Igual que en MarketplaceFee, el
+  /// índice único va sobre esta clave y no sobre columnas opcionales, porque
+  /// PostgreSQL no deduplica NULLs.
+  dedupeKey       String
 
   cost        Decimal @default(0) @db.Decimal(18, 4)
   clicks      Int     @default(0)
@@ -746,7 +760,7 @@ model AdMetricDaily {
   adGroup       AdGroup?      @relation(fields: [adGroupId], references: [id], onDelete: SetNull)
 
   /// Un registro por (cuenta, nivel, entidad, día): reimportar actualiza, no duplica.
-  @@unique([sellerAccountId, level, adCampaignId, mlItemId, date])
+  @@unique([sellerAccountId, dedupeKey])
   @@index([sellerAccountId, date])
   @@index([mlItemId, date])
 }
@@ -812,7 +826,10 @@ model ListingMapping {
   sellerAccountId String
   skuId           String
   mlItemId        String
-  variationId     String?
+  /// Cadena vacía = publicación sin variaciones.
+  /// No es opcional a propósito: con NULL, el índice único de PostgreSQL dejaría
+  /// crear dos mapeos para la misma publicación sin variación.
+  variationId     String  @default("")
   /// Unidades de SKU que consume una unidad vendida de la publicación (kits, packs).
   unitsPerListing Decimal @default(1) @db.Decimal(18, 4)
   createdAt       DateTime @default(now())
@@ -854,9 +871,10 @@ model InventoryMovement {
   stockValueBefore Decimal @db.Decimal(18, 4)
   stockValueAfter  Decimal @db.Decimal(18, 4)
 
-  /// Origen del movimiento (purchaseItemId, orderItemId, …).
-  referenceType String?
-  referenceId   String?
+  /// Origen del movimiento. Obligatorio: es lo que da idempotencia, y con NULL
+  /// el índice único no impediría duplicar el movimiento.
+  referenceType String
+  referenceId   String
   notes         String?
 
   source    MoneySource @default(MANUAL)
@@ -960,7 +978,10 @@ model TransactionCategory {
   expenses Expense[]
   incomes  Income[]
 
-  @@unique([direction, name, parentId])
+  /// Nombre único por dirección. No se incluye `parentId` porque es opcional y
+  /// un índice único con NULL no evita duplicados en PostgreSQL: se podrían
+  /// crear dos categorías raíz llamadas igual.
+  @@unique([direction, name])
 }
 
 enum RecurrenceInterval {
@@ -1150,13 +1171,17 @@ model CashflowEntry {
   description     String?
   referenceType   String?
   referenceId     String?
+  /// `${referenceType}:${referenceId}:${direction}` o un identificador propio
+  /// para las líneas proyectadas. Obligatoria por el mismo motivo que en las
+  /// demás tablas: un único con NULL no deduplica.
+  dedupeKey       String
 
   source    MoneySource @default(CALCULATED)
   createdAt DateTime    @default(now())
 
   sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
 
-  @@unique([referenceType, referenceId, direction])
+  @@unique([dedupeKey])
   @@index([sellerAccountId, date])
   @@index([date, kind])
 }
@@ -1418,12 +1443,17 @@ model WebhookEvent {
   status          WebhookStatus @default(RECEIVED)
   errorMessage    String?
   payload         Json
+  /// `webhook:${provider}:${topic}:${resource}:${sent}` (ver
+  /// src/server/sync/idempotency.ts). No incluye `attempts`: Mercado Libre
+  /// reintenta la MISMA notificación hasta ocho veces incrementando ese contador,
+  /// y cada reintento tiene que resolverse como el mismo evento.
+  dedupeKey       String
 
   sellerAccount SellerAccount? @relation(fields: [sellerAccountId], references: [id], onDelete: SetNull)
 
-  /// Idempotencia de webhooks: la misma notificación (mismo recurso, mismo envío)
-  /// no se procesa dos veces (caso de test obligatorio §41 del brief).
-  @@unique([provider, topic, resource, sentAt])
+  /// Idempotencia de webhooks: la misma notificación no se procesa dos veces
+  /// (caso de test obligatorio §41 del brief).
+  @@unique([dedupeKey])
   @@index([status, receivedAt])
   @@index([sellerAccountId, topic])
 }

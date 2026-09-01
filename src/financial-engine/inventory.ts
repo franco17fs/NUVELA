@@ -47,7 +47,7 @@ export const weightedAverageStrategy: CostingStrategy = {
 
     // Si el stock queda en cero o negativo, el promedio pierde sentido:
     // se conserva el anterior en vez de dividir por cero o inventar un costo.
-    const newAverage = newStock.isPositive() ? newValue.div(newStock) : before.averageCost;
+    const newAverage = newStock.greaterThan(0) ? newValue.div(newStock) : before.averageCost;
 
     return {
       before,

@@ -53,9 +53,9 @@ export function calculateDailyReserve(input: DailyReserveInput): DailyReserveRes
   const dailyAmount = needFromOperations.div(divisor);
 
   const dailyCapacity = money(input.averageDailyContribution);
-  const exceedsCapacity = dailyCapacity.isPositive()
+  const exceedsCapacity = dailyCapacity.greaterThan(0)
     ? dailyAmount.greaterThan(dailyCapacity)
-    : needFromOperations.isPositive();
+    : needFromOperations.greaterThan(0);
 
   const confidence = projectionConfidence({
     historyDays: input.historyDays,
@@ -75,7 +75,7 @@ export function calculateDailyReserve(input: DailyReserveInput): DailyReserveRes
     explanation.push(`Quedan ${daysRemaining} día(s) hasta el vencimiento.`);
   }
 
-  if (money(input.pendingReleaseBeforeDue).isPositive()) {
+  if (money(input.pendingReleaseBeforeDue).greaterThan(0)) {
     explanation.push(
       `Se liberan ${formatARS(input.pendingReleaseBeforeDue)} de Mercado Pago antes del vencimiento; ` +
         `${formatARS(commitmentsBefore)} ya están comprometidos antes que esta obligación, así que se puede contar con ${formatARS(usableIncoming)}.`,
@@ -92,7 +92,7 @@ export function calculateDailyReserve(input: DailyReserveInput): DailyReserveRes
     );
   }
 
-  if (exceedsCapacity && dailyCapacity.isPositive()) {
+  if (exceedsCapacity && dailyCapacity.greaterThan(0)) {
     explanation.push(
       `Atención: la contribución promedio es de ${formatARS(dailyCapacity)}/día, menos que lo que hay que separar.`,
     );

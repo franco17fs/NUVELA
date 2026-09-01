@@ -99,7 +99,7 @@ export function calculateSalesForecast(
   const slope = useTrend ? linearSlope(window.map((point) => money(point.revenue))) : ZERO;
   if (useTrend && !slope.isZero()) {
     assumptions.push(
-      `Tendencia diaria detectada: ${slope.isPositive() ? "+" : ""}${slope.toDecimalPlaces(2).toFixed(2)} por día, amortiguada en el horizonte.`,
+      `Tendencia diaria detectada: ${slope.greaterThan(0) ? "+" : ""}${slope.toDecimalPlaces(2).toFixed(2)} por día, amortiguada en el horizonte.`,
     );
   }
 

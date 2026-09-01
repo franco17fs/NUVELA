@@ -72,6 +72,35 @@ export function adMetricKey(params: {
 }
 
 /**
+ * Línea de cargo. Se usa una clave de texto y no un índice compuesto porque
+ * `orderId` es opcional (hay cargos que no cuelgan de una venta, como la
+ * publicidad del día) y en PostgreSQL un índice único con NULL no deduplica.
+ */
+export function feeKey(params: {
+  orderId: string | null;
+  type: string;
+  source: string;
+  /** Discrimina varias líneas del mismo tipo, por ejemplo un envío por pack. */
+  discriminator?: string | null;
+}): string {
+  return [
+    params.orderId ?? "sin-orden",
+    params.type,
+    params.source,
+    params.discriminator ?? "",
+  ].join(":");
+}
+
+/** Línea de cashflow derivada de una entidad del sistema. */
+export function cashflowKey(params: {
+  referenceType: string;
+  referenceId: string;
+  direction: "IN" | "OUT";
+}): string {
+  return `${params.referenceType}:${params.referenceId}:${params.direction}`;
+}
+
+/**
  * Deduplica una lista por clave, conservando el ÚLTIMO elemento de cada clave.
  *
  * Se queda con el último y no con el primero porque, cuando la misma entidad

@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+/*
+ * Sistema visual de NUVELA.
+ *
+ * Objetivo (§45 del brief): que se sienta un centro financiero, no un panel
+ * administrativo genérico. Denso en información pero legible, con jerarquía
+ * clara entre el número que importa y el contexto que lo explica.
+ *
+ * Decisiones:
+ *  - Tipografía tabular para todos los importes: las columnas de números tienen
+ *    que alinearse verticalmente o la lectura se vuelve lenta.
+ *  - Verde y rojo NUNCA son la única señal: siempre van con flecha o texto, para
+ *    que un daltónico pueda leer la variación.
+ *  - Ámbar reservado exclusivamente para "estimado": si todo fuera del mismo
+ *    color, un cargo estimado se confundiría con uno real.
+ */
+
+@theme {
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8fafc;
+  --color-surface-sunken: #f1f5f9;
+  --color-border-subtle: #e2e8f0;
+
+  --color-ink: #0f172a;
+  --color-ink-muted: #475569;
+  --color-ink-subtle: #94a3b8;
+
+  --color-brand: #1e40af;
+  --color-brand-soft: #eff6ff;
+
+  --color-positive: #047857;
+  --color-positive-soft: #ecfdf5;
+  --color-negative: #b91c1c;
+  --color-negative-soft: #fef2f2;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-neutral-chip: #f1f5f9;
+
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    background-color: var(--color-surface-muted);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Todos los importes usan cifras tabulares: sin esto las columnas de números
+     bailan y comparar dos filas cuesta el doble. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+
+  th {
+    font-weight: 600;
+  }
+}
+
+@layer components {
+  .card {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 0.75rem;
+  }
+
+  .kpi-value {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.02em;
+  }
+}
+
+/* Scrollbar discreta: las tablas de este sistema son anchas y se scrollean mucho. */
+@layer utilities {
+  .scroll-slim::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+  .scroll-slim::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1;
+    border-radius: 9999px;
+  }
+  .scroll-slim::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+}

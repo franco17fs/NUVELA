@@ -232,7 +232,7 @@ export function obligationsWithinHorizon(
       // Se incluyen las vencidas (días negativos): siguen siendo plata que se debe.
       return days <= horizonDays;
     })
-    .filter((obligation) => uncoveredAmount(obligation).isPositive())
+    .filter((obligation) => uncoveredAmount(obligation).greaterThan(0))
     .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime());
 }
 
@@ -254,10 +254,10 @@ export function deriveObligationStatus(
   const paid = money(obligation.paidAmount);
   const reserved = money(obligation.reservedAmount);
 
-  if (paid.greaterThanOrEqualTo(amount) && amount.isPositive()) return "PAID";
+  if (paid.greaterThanOrEqualTo(amount) && amount.greaterThan(0)) return "PAID";
   if (daysUntil(obligation.dueDate, today) < 0) return "OVERDUE";
-  if (reserved.plus(paid).greaterThanOrEqualTo(amount) && amount.isPositive()) return "COVERED";
-  if (reserved.isPositive() || paid.isPositive()) return "PARTIALLY_RESERVED";
+  if (reserved.plus(paid).greaterThanOrEqualTo(amount) && amount.greaterThan(0)) return "COVERED";
+  if (reserved.greaterThan(0) || paid.greaterThan(0)) return "PARTIALLY_RESERVED";
   return "UPCOMING";
 }
 

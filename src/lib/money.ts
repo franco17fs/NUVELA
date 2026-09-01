@@ -17,7 +17,18 @@ import Decimal from "decimal.js";
 Decimal.set({ precision: 28, rounding: Decimal.ROUND_HALF_UP });
 
 export type Money = Decimal;
-export type MoneyInput = Decimal | string | number | null | undefined;
+
+/**
+ * Cualquier cosa que represente un importe.
+ *
+ * `DecimalLike` cubre los `Decimal` que devuelve Prisma: son decimal.js, pero de
+ * otra instancia del módulo, así que no pasan un `instanceof` contra el nuestro.
+ */
+export interface DecimalLike {
+  toString(): string;
+}
+
+export type MoneyInput = Decimal | DecimalLike | string | number | null | undefined;
 
 export const ZERO = new Decimal(0);
 
@@ -29,11 +40,26 @@ export const ZERO = new Decimal(0);
 export function money(value: MoneyInput): Decimal {
   if (value === null || value === undefined) return ZERO;
   if (value instanceof Decimal) return value;
+
   if (typeof value === "number") {
     if (!Number.isFinite(value)) return ZERO;
-    return new Decimal(value.toString());
+    return fromString(value.toString());
   }
-  const trimmed = value.trim();
+
+  // Prisma devuelve los NUMERIC como instancias de SU PROPIA copia de decimal.js.
+  // Son estructuralmente idénticas pero vienen de otro módulo, así que
+  // `instanceof Decimal` da false y el valor caería al camino de string,
+  // rompiendo con "value.trim is not a function". Se normaliza vía `toString`,
+  // que es exacto: decimal.js no pierde precisión al serializar.
+  if (typeof value === "object") {
+    return fromString(String(value));
+  }
+
+  return fromString(value);
+}
+
+function fromString(raw: string): Decimal {
+  const trimmed = raw.trim();
   if (trimmed === "") return ZERO;
   try {
     return new Decimal(trimmed);
@@ -83,6 +109,25 @@ export function isZero(value: MoneyInput): boolean {
 
 export function isNegative(value: MoneyInput): boolean {
   return money(value).isNegative();
+}
+
+/**
+ * Estrictamente mayor que cero.
+ *
+ * ## Trampa de decimal.js que hay que conocer
+ *
+ * El método `Decimal.prototype.isPositive()` mira el SIGNO, no el valor, y el
+ * cero tiene signo positivo: `new Decimal(0).isPositive() === true`.
+ *
+ * Usarlo como "tiene monto" produce bugs silenciosos y caros: una obligación sin
+ * nada reservado aparecía como "parcialmente reservada", y una obligación ya
+ * cubierta se colaba en la lista de pendientes.
+ *
+ * Por eso en todo el proyecto la pregunta "¿hay importe?" se hace con
+ * `greaterThan(0)` —o con esta función— y nunca con `isPositive()`.
+ */
+export function isPositive(value: MoneyInput): boolean {
+  return money(value).greaterThan(0);
 }
 
 export function max(a: MoneyInput, b: MoneyInput): Decimal {

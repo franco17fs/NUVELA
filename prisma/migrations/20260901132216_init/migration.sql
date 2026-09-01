@@ -288,6 +288,7 @@ CREATE TABLE "MarketplaceFee" (
     "id" TEXT NOT NULL,
     "sellerAccountId" TEXT NOT NULL,
     "orderId" TEXT,
+    "dedupeKey" TEXT NOT NULL,
     "type" "FeeType" NOT NULL,
     "amount" DECIMAL(18,4) NOT NULL,
     "currencyId" TEXT NOT NULL DEFAULT 'ARS',
@@ -483,6 +484,7 @@ CREATE TABLE "AdMetricDaily" (
     "level" TEXT NOT NULL,
     "mlItemId" TEXT,
     "date" DATE NOT NULL,
+    "dedupeKey" TEXT NOT NULL,
     "cost" DECIMAL(18,4) NOT NULL DEFAULT 0,
     "clicks" INTEGER NOT NULL DEFAULT 0,
     "impressions" INTEGER NOT NULL DEFAULT 0,
@@ -546,7 +548,7 @@ CREATE TABLE "ListingMapping" (
     "sellerAccountId" TEXT NOT NULL,
     "skuId" TEXT NOT NULL,
     "mlItemId" TEXT NOT NULL,
-    "variationId" TEXT,
+    "variationId" TEXT NOT NULL DEFAULT '',
     "unitsPerListing" DECIMAL(18,4) NOT NULL DEFAULT 1,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
@@ -571,8 +573,8 @@ CREATE TABLE "InventoryMovement" (
     "avgCostAfter" DECIMAL(18,4) NOT NULL,
     "stockValueBefore" DECIMAL(18,4) NOT NULL,
     "stockValueAfter" DECIMAL(18,4) NOT NULL,
-    "referenceType" TEXT,
-    "referenceId" TEXT,
+    "referenceType" TEXT NOT NULL,
+    "referenceId" TEXT NOT NULL,
     "notes" TEXT,
     "source" "MoneySource" NOT NULL DEFAULT 'MANUAL',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -760,6 +762,7 @@ CREATE TABLE "CashflowEntry" (
     "description" TEXT,
     "referenceType" TEXT,
     "referenceId" TEXT,
+    "dedupeKey" TEXT NOT NULL,
     "source" "MoneySource" NOT NULL DEFAULT 'CALCULATED',
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
@@ -902,6 +905,7 @@ CREATE TABLE "WebhookEvent" (
     "status" "WebhookStatus" NOT NULL DEFAULT 'RECEIVED',
     "errorMessage" TEXT,
     "payload" JSONB NOT NULL,
+    "dedupeKey" TEXT NOT NULL,
 
     CONSTRAINT "WebhookEvent_pkey" PRIMARY KEY ("id")
 );
@@ -985,7 +989,10 @@ CREATE UNIQUE INDEX "Shipment_sellerAccountId_mlShipmentId_key" ON "Shipment"("s
 CREATE INDEX "MarketplaceFee_sellerAccountId_businessDate_type_idx" ON "MarketplaceFee"("sellerAccountId", "businessDate", "type");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "MarketplaceFee_sellerAccountId_orderId_type_source_key" ON "MarketplaceFee"("sellerAccountId", "orderId", "type", "source");
+CREATE INDEX "MarketplaceFee_orderId_idx" ON "MarketplaceFee"("orderId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "MarketplaceFee_sellerAccountId_dedupeKey_key" ON "MarketplaceFee"("sellerAccountId", "dedupeKey");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "OrderProfitability_orderId_key" ON "OrderProfitability"("orderId");
@@ -1033,7 +1040,7 @@ CREATE INDEX "AdMetricDaily_sellerAccountId_date_idx" ON "AdMetricDaily"("seller
 CREATE INDEX "AdMetricDaily_mlItemId_date_idx" ON "AdMetricDaily"("mlItemId", "date");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "AdMetricDaily_sellerAccountId_level_adCampaignId_mlItemId_d_key" ON "AdMetricDaily"("sellerAccountId", "level", "adCampaignId", "mlItemId", "date");
+CREATE UNIQUE INDEX "AdMetricDaily_sellerAccountId_dedupeKey_key" ON "AdMetricDaily"("sellerAccountId", "dedupeKey");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Sku_code_key" ON "Sku"("code");
@@ -1075,7 +1082,7 @@ CREATE INDEX "PurchaseItem_purchaseId_idx" ON "PurchaseItem"("purchaseId");
 CREATE INDEX "PurchaseItem_skuId_idx" ON "PurchaseItem"("skuId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "TransactionCategory_direction_name_parentId_key" ON "TransactionCategory"("direction", "name", "parentId");
+CREATE UNIQUE INDEX "TransactionCategory_direction_name_key" ON "TransactionCategory"("direction", "name");
 
 -- CreateIndex
 CREATE INDEX "Expense_businessDate_idx" ON "Expense"("businessDate");
@@ -1108,7 +1115,7 @@ CREATE INDEX "CashflowEntry_sellerAccountId_date_idx" ON "CashflowEntry"("seller
 CREATE INDEX "CashflowEntry_date_kind_idx" ON "CashflowEntry"("date", "kind");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "CashflowEntry_referenceType_referenceId_direction_key" ON "CashflowEntry"("referenceType", "referenceId", "direction");
+CREATE UNIQUE INDEX "CashflowEntry_dedupeKey_key" ON "CashflowEntry"("dedupeKey");
 
 -- CreateIndex
 CREATE INDEX "Forecast_sellerAccountId_generatedAt_idx" ON "Forecast"("sellerAccountId", "generatedAt");
@@ -1141,7 +1148,7 @@ CREATE INDEX "WebhookEvent_status_receivedAt_idx" ON "WebhookEvent"("status", "r
 CREATE INDEX "WebhookEvent_sellerAccountId_topic_idx" ON "WebhookEvent"("sellerAccountId", "topic");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "WebhookEvent_provider_topic_resource_sentAt_key" ON "WebhookEvent"("provider", "topic", "resource", "sentAt");
+CREATE UNIQUE INDEX "WebhookEvent_dedupeKey_key" ON "WebhookEvent"("dedupeKey");
 
 -- AddForeignKey
 ALTER TABLE "OAuthToken" ADD CONSTRAINT "OAuthToken_sellerAccountId_fkey" FOREIGN KEY ("sellerAccountId") REFERENCES "SellerAccount"("id") ON DELETE CASCADE ON UPDATE CASCADE;

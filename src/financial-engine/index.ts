@@ -17,5 +17,6 @@ export * from "./cash";
 export * from "./daily-reserve";
 export * from "./cashflow";
 export * from "./consolidation";
+export * from "./balance";
 export * from "./forecast";
 export * from "./alerts";

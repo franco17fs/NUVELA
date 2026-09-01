@@ -4,6 +4,7 @@ import {
   applyPercentage,
   clampNonNegative,
   formatPercent,
+  isPositive,
   money,
   percentage,
   ratio,
@@ -28,6 +29,23 @@ describe("aritmética de dinero", () => {
     expect(money(Number.NaN).toString()).toBe("0");
   });
 
+  it("acepta un Decimal que viene de otra instancia del módulo (el de Prisma)", () => {
+    // Prisma devuelve los NUMERIC como Decimal de SU copia de decimal.js, así
+    // que `instanceof` contra el nuestro da false. Antes esto rompía con
+    // "value.trim is not a function" al renderizar cualquier página con datos.
+    const prismaLikeDecimal = {
+      toString: () => "1234.5600",
+      // decimal.js expone estas propiedades internas; se incluyen para que el
+      // objeto se parezca a lo que realmente llega desde la base.
+      s: 1,
+      e: 3,
+      d: [1234, 5600000],
+    };
+
+    expect(money(prismaLikeDecimal).toString()).toBe("1234.56");
+    expect(sum([prismaLikeDecimal, "0.44"]).toString()).toBe("1235");
+  });
+
   it("devuelve cero en vez de NaN o Infinity al dividir por cero", () => {
     expect(percentage(100, 0).toString()).toBe("0");
     expect(ratio(100, 0).toString()).toBe("0");
@@ -37,6 +55,18 @@ describe("aritmética de dinero", () => {
     expect(percentage(2905, 8000).toDecimalPlaces(4).toString()).toBe("36.3125");
     expect(applyPercentage(10000, 8.8).toString()).toBe("880");
     expect(formatPercent(percentage(1, 3), 2)).toBe("33.33%");
+  });
+
+  it("isPositive es ESTRICTAMENTE mayor que cero", () => {
+    // decimal.js define isPositive() por el SIGNO, y el cero tiene signo
+    // positivo: `new Decimal(0).isPositive() === true`. Usar ese método como
+    // "tiene monto" hacía que una obligación sin nada reservado apareciera como
+    // "parcialmente reservada". El helper del proyecto no tiene esa trampa.
+    expect(money(0).isPositive()).toBe(true); // comportamiento de la librería
+    expect(isPositive(0)).toBe(false); // el nuestro
+    expect(isPositive(0.01)).toBe(true);
+    expect(isPositive(-1)).toBe(false);
+    expect(isPositive(null)).toBe(false);
   });
 
   it("nunca deja un disponible por debajo de cero", () => {

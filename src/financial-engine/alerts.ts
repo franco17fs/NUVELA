@@ -76,7 +76,7 @@ export function generateAlerts(input: AlertInput): Alert[] {
     });
   }
 
-  if (money(input.obligationsDue).isPositive()) {
+  if (money(input.obligationsDue).greaterThan(0)) {
     alerts.push({
       id: "obligations-due",
       severity: "WARNING",
@@ -86,7 +86,7 @@ export function generateAlerts(input: AlertInput): Alert[] {
     });
   }
 
-  if (input.dailyReserve && money(input.dailyReserve.totalDaily).isPositive()) {
+  if (input.dailyReserve && money(input.dailyReserve.totalDaily).greaterThan(0)) {
     alerts.push({
       id: "daily-reserve",
       severity: "WARNING",
@@ -104,7 +104,7 @@ export function generateAlerts(input: AlertInput): Alert[] {
         detail: `Margen antes de ads: ${formatARS(sku.marginBeforeAds)} · después: ${formatARS(sku.margin)}.`,
         href: "/rentabilidad",
       });
-    } else if (sku.losesMoney && money(sku.units).isPositive()) {
+    } else if (sku.losesMoney && money(sku.units).greaterThan(0)) {
       alerts.push({
         id: `sku-loses-money-${sku.skuCode}`,
         severity: "CRITICAL",
@@ -145,7 +145,7 @@ export function generateAlerts(input: AlertInput): Alert[] {
     });
   }
 
-  if (input.balanceVsSafe && money(input.balanceVsSafe.committed).isPositive()) {
+  if (input.balanceVsSafe && money(input.balanceVsSafe.committed).greaterThan(0)) {
     alerts.push({
       id: "committed-money",
       severity: "INFO",
@@ -185,5 +185,5 @@ export function trendIndicator(
 ): { direction: "up" | "down" | "flat"; delta: Decimal } {
   const delta = money(current).minus(money(previous));
   if (delta.isZero()) return { direction: "flat", delta: ZERO };
-  return { direction: delta.isPositive() ? "up" : "down", delta };
+  return { direction: delta.greaterThan(0) ? "up" : "down", delta };
 }
