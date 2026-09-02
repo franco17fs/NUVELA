@@ -5,6 +5,7 @@
   "description": "Centro financiero, de rentabilidad y cashflow para vendedores de Mercado Libre Argentina",
   "scripts": {
     "setup": "node scripts/setup-env.mjs",
+    "setup:creds": "node scripts/setup-credentials.mjs",
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "next start",
