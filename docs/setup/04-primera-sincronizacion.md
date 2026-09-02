@@ -4,30 +4,47 @@ Del `.env` completo a un dashboard que dice la verdad.
 
 ---
 
-## Checklist del `.env`
+## Preparar el `.env`
+
+Hay un comando que lo hace todo:
 
 ```bash
-DATABASE_URL="postgresql://nuvela:nuvela@localhost:5432/nuvela?schema=public"
-
-# node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-ENCRYPTION_KEY=""
-
-ML_CLIENT_ID=""
-ML_CLIENT_SECRET=""
-ML_REDIRECT_URI=""          # idéntico al del DevCenter
-ML_WEBHOOK_SECRET=""
-
-MP_CLIENT_ID=""             # opcional al principio
-MP_CLIENT_SECRET=""
-MP_REDIRECT_URI=""
-
-APP_BASE_URL=""
-CRON_SECRET=""              # otra cadena aleatoria larga
+npm run setup -- https://TU-URL.trycloudflare.com
 ```
 
-Si falta algo o `ENCRYPTION_KEY` no son 32 bytes en base64, la aplicación falla
-al arrancar con un mensaje que nombra la variable. Es a propósito: mejor un
-error claro que un token guardado sin cifrar.
+Reemplazando por tu URL pública real (la del túnel o la de tu dominio).
+
+El comando:
+
+1. Crea el `.env` a partir de `.env.example` si no existe.
+2. **Genera los tres secretos** con el formato exacto que espera la aplicación.
+3. Completa `APP_BASE_URL`, `ML_REDIRECT_URI` y `MP_REDIRECT_URI`.
+4. Te imprime, ya armadas, **las URLs para pegar en el DevCenter** — incluida la
+   de notificaciones, que lleva el secreto adentro.
+
+Si todavía no tenés la URL, corré `npm run setup` a secas: genera los secretos y
+te avisa qué falta. Volvés a correrlo con la URL cuando la tengas.
+
+Es idempotente: **nunca pisa un secreto ya generado ni una credencial que
+cargaste a mano**. Lo único que reemplaza es la URL, y sólo si se la pasás. Eso
+importa porque la URL de un túnel cambia en cada reinicio: cuando pase, volvés a
+correr el comando con la nueva y listo.
+
+> Regenerar `ENCRYPTION_KEY` haría ilegibles los tokens ya guardados y habría
+> que reconectar las cuentas. Por eso el comando no lo toca si ya existe.
+
+### Lo único que queda a mano
+
+```bash
+ML_CLIENT_ID=""        # del DevCenter de Mercado Libre
+ML_CLIENT_SECRET=""    # del DevCenter de Mercado Libre
+MP_CLIENT_ID=""        # del panel de Mercado Pago (opcional al principio)
+MP_CLIENT_SECRET=""    # del panel de Mercado Pago (opcional al principio)
+```
+
+Si falta alguno de los obligatorios, o `ENCRYPTION_KEY` no son 32 bytes en
+base64, la aplicación falla al arrancar con un mensaje que nombra la variable. Es
+a propósito: mejor un error claro que un token guardado sin cifrar.
 
 ---
 

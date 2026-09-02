@@ -56,17 +56,17 @@ componen, con la fuente de cada uno.
 ## Puesta en marcha
 
 ```bash
-cp .env.example .env
-
-# clave de cifrado de credenciales (32 bytes en base64)
-node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-
 npm install
-npm run db:up        # PostgreSQL en Docker
+npm run setup -- https://TU-URL-PUBLICA    # crea el .env y genera los secretos
+npm run db:up                              # PostgreSQL en Docker
 npm run db:migrate
-npm run db:seed      # categorías y reglas de referencia
+npm run db:seed                            # categorías y reglas de referencia
 npm run dev
 ```
+
+`npm run setup` crea el `.env`, genera las claves criptográficas con el formato
+correcto y te imprime las URLs que hay que pegar en el DevCenter de Mercado
+Libre. Sólo quedan por cargar a mano `ML_CLIENT_ID` y `ML_CLIENT_SECRET`.
 
 En `http://localhost:3000/configuracion` se conectan las cuentas.
 
@@ -90,8 +90,8 @@ Las credenciales las genera el usuario; el sistema no puede obtenerlas:
 |---|---|
 | `ML_CLIENT_ID` / `ML_CLIENT_SECRET` | DevCenter de Mercado Libre |
 | `MP_CLIENT_ID` / `MP_CLIENT_SECRET` | Panel de aplicaciones de Mercado Pago |
-| `ENCRYPTION_KEY` | Se genera con el comando de arriba |
-| `ML_WEBHOOK_SECRET` / `CRON_SECRET` | Cualquier cadena aleatoria larga |
+| `ENCRYPTION_KEY` | La genera `npm run setup` |
+| `ML_WEBHOOK_SECRET` / `CRON_SECRET` | Los genera `npm run setup` |
 
 El `redirect_uri` registrado en la aplicación de Mercado Libre tiene que
 coincidir **exactamente** con `ML_REDIRECT_URI`, y **debe ser HTTPS**:
